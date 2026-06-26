@@ -1,0 +1,67 @@
+app:
+  env: development
+  port: 8080
+  log_level: debug
+  api_base_url: http://localhost:8080
+  frontend_url: http://localhost:3000
+
+database:
+  host: localhost
+  port: 5432
+  user: isp_user
+  password: isp_password
+  dbname: isp_billing
+  sslmode: disable
+  max_open_conns: 25
+  max_idle_conns: 5
+  max_lifetime: 5m
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: "your-secret-key-change-in-production"
+  access_duration: 15m
+  refresh_duration: 7d
+
+mikrotik:
+  host: 192.168.88.1
+  port: 8728
+  username: admin
+  password: admin
+  timeout: 30s
+
+mpesa:
+  consumer_key: "your-consumer-key"
+  consumer_secret: "your-consumer-secret"
+  passkey: "your-passkey"
+  shortcode: "174379"
+  environment: sandbox
+  callback_url: https://your-domain.com/webhook/mpesa/callback
+  timeout_url: https://your-domain.com/webhook/mpesa/timeout
+  result_url: https://your-domain.com/webhook/mpesa/result
+  confirmation_url: https://your-domain.com/webhook/mpesa/confirmation
+  validation_url: https://your-domain.com/webhook/mpesa/validation
+
+sms:
+  provider: africastalking
+  api_key: "your-api-key"
+  sender_id: "YOUR_ISP"
+  enabled: true
+  retry_count: 3
+
+email:
+  smtp_host: smtp.gmail.com
+  smtp_port: 587
+  username: your-email@gmail.com
+  password: your-app-password
+  from: support@yourisp.com
+  enabled: true
+
+queue:
+  concurrency: 10
+  retry_max: 3
+  retry_delay: 5m
