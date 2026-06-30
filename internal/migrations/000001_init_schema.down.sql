@@ -1,0 +1,8 @@
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS invoices;
+DROP TABLE IF EXISTS mikrotik_users;
+DROP TABLE IF EXISTS nas_devices;
+DROP TABLE IF EXISTS customers;
+DROP TABLE IF EXISTS packages;
+
+DROP EXTENSION IF EXISTS "uuid-ossp";
