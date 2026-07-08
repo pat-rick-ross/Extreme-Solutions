@@ -1,8 +1,8 @@
 package postgres
 
 import (
-	"database/sql"
 	"context"
+	"database/sql"
 	"time"
 
 	_ "github.com/lib/pq" // Pure Go Postgres driver initialization

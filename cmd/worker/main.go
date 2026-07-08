@@ -9,14 +9,14 @@ import (
 	"syscall"
 	"time"
 
+	"Extreme-Solutions/internal/config"
+	"Extreme-Solutions/internal/pkg/logger"
+	"Extreme-Solutions/internal/repository/postgres"
+	"Extreme-Solutions/internal/worker"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
-	"github.com/your-org/isp-billing/internal/config"
-	"github.com/your-org/isp-billing/internal/pkg/logger"
-	"github.com/your-org/isp-billing/internal/repository/postgres"
-	"github.com/your-org/isp-billing/internal/worker"
 )
 
 func main() {

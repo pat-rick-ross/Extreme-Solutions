@@ -20,7 +20,14 @@ type Payment struct {
 	MpesaPhone   string          `json:"mpesa_phone,omitempty"`
 	Description  string          `json:"description,omitempty"`
 	Metadata     json.RawMessage `json:"metadata,omitempty"` // Maps directly to Postgres JSONB type
+	PaidAt       *time.Time      `json:"completed_at,omitempty"`
 	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type PaymentInitiateRequest struct {
+	Phone     string  `json:"phone"`
+	Amount    float64 `json:"amount"`
+	InvoiceID string  `json:"invoice_id"`
 }

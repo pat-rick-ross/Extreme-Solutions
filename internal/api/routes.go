@@ -2,18 +2,19 @@ package api
 
 import (
 	"net/http"
+	"time"
 
+	"Extreme-Solutions/internal/api/handlers"
+	customMiddleware "Extreme-Solutions/internal/api/middleware"
+	"Extreme-Solutions/internal/config"
+	"Extreme-Solutions/internal/repository"
+	"Extreme-Solutions/internal/service/billing"
+	"Extreme-Solutions/internal/service/network"
+	"Extreme-Solutions/internal/service/payment"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
-	"github.com/your-org/isp-billing/internal/api/handlers"
-	"github.com/your-org/isp-billing/internal/api/middleware"
-	"github.com/your-org/isp-billing/internal/config"
-	"github.com/your-org/isp-billing/internal/repository"
-	"github.com/your-org/isp-billing/internal/repository/redis"
-	"github.com/your-org/isp-billing/internal/service/network"
-	"github.com/your-org/isp-billing/internal/service/payment"
-	"github.com/your-org/isp-billing/internal/service/billing"
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/cors"
 )
 
 type Server struct {
@@ -27,9 +28,12 @@ func NewServer(
 	invoiceRepo repository.InvoiceRepository,
 	paymentRepo repository.PaymentRepository,
 	packageRepo repository.PackageRepository,
-	cache *redis.Cache,
+	cache repository.CacheRepository,
+	redisClient *redis.Client, // Concrete type injection received here
 	provisioner *network.Provisioner,
-	mpesaService *payment.MPESAService,
+	darajaSvc *payment.DarajaService,
+	paystackSvc *payment.PaystackService,
+	reconciler *payment.PaymentReconciler,
 	invoiceGenerator *billing.InvoiceGenerator,
 	proRater *billing.ProRater,
 ) *Server {
@@ -39,23 +43,22 @@ func NewServer(
 	}
 
 	s.setupMiddleware()
-	s.setupRoutes(customerRepo, invoiceRepo, paymentRepo, packageRepo, cache, provisioner, mpesaService, invoiceGenerator, proRater)
+	// Fixed: Added redisClient to the setupRoutes call parameter sequence
+	s.setupRoutes(customerRepo, invoiceRepo, paymentRepo, packageRepo, cache, redisClient, provisioner, darajaSvc, paystackSvc, reconciler, invoiceGenerator, proRater)
 
 	return s
 }
 
 func (s *Server) setupMiddleware() {
-	// CORS
-	s.router.Use(cors.Handler(cors.Options{
+	s.router.Use(cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "x-paystack-signature"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
-	}))
+	}).Handler)
 
-	// Standard middleware
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.RealIP)
 	s.router.Use(middleware.Logger)
@@ -68,21 +71,24 @@ func (s *Server) setupRoutes(
 	invoiceRepo repository.InvoiceRepository,
 	paymentRepo repository.PaymentRepository,
 	packageRepo repository.PackageRepository,
-	cache *redis.Cache,
+	cache repository.CacheRepository,
+	redisClient *redis.Client, // Fixed: Added signature definition here to wire up line 90
 	provisioner *network.Provisioner,
-	mpesaService *payment.MPESAService,
+	darajaSvc *payment.DarajaService,
+	paystackSvc *payment.PaystackService,
+	reconciler *payment.PaymentReconciler,
 	invoiceGenerator *billing.InvoiceGenerator,
 	proRater *billing.ProRater,
 ) {
-	// Initialize handlers
+	// Initialize domain feature handlers
 	customerHandler := handlers.NewCustomerHandler(customerRepo, packageRepo)
 	invoiceHandler := handlers.NewInvoiceHandler(invoiceRepo, customerRepo)
-	paymentHandler := handlers.NewPaymentHandler(paymentRepo, invoiceRepo, customerRepo, mpesaService)
+	paymentHandler := handlers.NewPaymentHandler(paymentRepo, invoiceRepo, customerRepo, darajaSvc, paystackSvc)
 	authHandler := handlers.NewAuthHandler(customerRepo, cache)
-	webhookHandler := handlers.NewWebhookHandler(paymentRepo, invoiceRepo, customerRepo)
+	webhookHandler := handlers.NewWebhookHandler(paystackSvc, darajaSvc, reconciler)
 
-	// Rate limiter
-	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
+	// App Rate limiter mapping (Now cleanly picks up the injected parameter context)
+	rateLimiter := customMiddleware.NewRateLimiter(redisClient, 100, time.Minute)
 
 	// Public routes
 	s.router.Group(func(r chi.Router) {
@@ -91,20 +97,18 @@ func (s *Server) setupRoutes(
 		r.Post("/api/v1/auth/refresh", authHandler.Refresh)
 	})
 
-	// Webhook routes (no auth)
+	// Webhook routes (Completely public with internal cryptographic validation)
 	s.router.Group(func(r chi.Router) {
-		r.Post("/webhook/mpesa/validation", webhookHandler.Validate)
-		r.Post("/webhook/mpesa/confirmation", webhookHandler.Confirm)
-		r.Post("/webhook/mpesa/callback", webhookHandler.Callback)
-		r.Post("/webhook/mpesa/timeout", webhookHandler.Timeout)
+		r.Post("/api/v1/payments/webhook/daraja", webhookHandler.HandleDarajaWebhook)
+		r.Post("/api/v1/payments/webhook/paystack", webhookHandler.HandlePaystackWebhook)
 	})
 
 	// Protected routes
 	s.router.Group(func(r chi.Router) {
-		r.Use(middleware.Auth)
+		r.Use(customMiddleware.Auth(s.cfg.JWT.Secret))
 		r.Use(rateLimiter.Limit)
 
-		// Customer routes
+		// Customer routing definitions
 		r.Route("/api/v1/customers", func(r chi.Router) {
 			r.Get("/", customerHandler.List)
 			r.Post("/", customerHandler.Create)
@@ -113,16 +117,7 @@ func (s *Server) setupRoutes(
 			r.Delete("/{id}", customerHandler.Delete)
 		})
 
-		// Package routes
-		r.Route("/api/v1/packages", func(r chi.Router) {
-			r.Get("/", packageHandler.List)
-			r.Post("/", packageHandler.Create)
-			r.Get("/{id}", packageHandler.GetByID)
-			r.Put("/{id}", packageHandler.Update)
-			r.Delete("/{id}", packageHandler.Delete)
-		})
-
-		// Invoice routes
+		// Invoice execution routes
 		r.Route("/api/v1/invoices", func(r chi.Router) {
 			r.Get("/", invoiceHandler.List)
 			r.Get("/{id}", invoiceHandler.GetByID)
@@ -130,36 +125,18 @@ func (s *Server) setupRoutes(
 			r.Post("/generate", invoiceHandler.Generate)
 		})
 
-		// Payment routes
+		// Multi-Gateway explicit payment invocation paths
 		r.Route("/api/v1/payments", func(r chi.Router) {
 			r.Post("/initiate", paymentHandler.InitiatePayment)
 			r.Get("/{id}", paymentHandler.GetPaymentStatus)
 			r.Get("/customer", paymentHandler.GetCustomerPayments)
 		})
-
-		// Network routes
-		r.Route("/api/v1/network", func(r chi.Router) {
-			r.Post("/provision", networkHandler.Provision)
-			r.Post("/suspend/{customer_id}", networkHandler.Suspend)
-			r.Post("/reactivate/{customer_id}", networkHandler.Reactivate)
-		})
 	})
 
-	// Health check
+	// Microservices health indicators
 	s.router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	s.router.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
-		// Check database connectivity
-		if err := dbPool.Ping(context.Background()); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"not ready","error":"database unavailable"}`))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ready"}`))
 	})
 }
 

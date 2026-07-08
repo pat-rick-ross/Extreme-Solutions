@@ -6,8 +6,8 @@ import (
 	"net/smtp"
 	"text/template"
 
-	"github.com/your-org/isp-billing/internal/config"
-	"github.com/your-org/isp-billing/internal/pkg/logger"
+	"Extreme-Solutions/internal/config"
+	"Extreme-Solutions/internal/pkg/logger"
 )
 
 type EmailService struct {
