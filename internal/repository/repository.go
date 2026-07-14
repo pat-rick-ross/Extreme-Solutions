@@ -42,6 +42,7 @@ type InvoiceRepository interface {
 	Update(ctx context.Context, invoice *domain.Invoice) error
 	MarkAsPaid(ctx context.Context, id uuid.UUID, paidAt time.Time) error // <-- Make sure this is here
 	ListOverdue(ctx context.Context, asOf time.Time) ([]*domain.Invoice, error)
+	GetAll(ctx context.Context) ([]*domain.Invoice, error) // <--- Add this line
 }
 
 type PaymentRepository interface {

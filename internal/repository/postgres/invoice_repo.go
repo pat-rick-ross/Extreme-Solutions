@@ -105,6 +105,21 @@ func (r *InvoiceRepository) GetUnpaidByCustomerID(ctx context.Context, customerI
 	return invoices, nil
 }
 
+func (r *InvoiceRepository) GetAll(ctx context.Context) ([]*domain.Invoice, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at FROM invoices")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var invoices []*domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		// ... scan logic ...
+		invoices = append(invoices, &inv)
+	}
+	return invoices, nil
+}
+
 func (r *InvoiceRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, paidAt *string) error {
 	query := `
 		UPDATE invoices 

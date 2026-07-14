@@ -31,7 +31,7 @@ func (i *IntaSendService) InitiateSTKPush(ctx context.Context, phone string, amo
 			"phone_number": phone,
 			"account":      accountRef,
 		}).
-		Post("https://sandbox.intasend.com/api/v1/collection/")
+		Post("https://sandbox.intasend.com/api/v1/payment/mpesa-stk-push/")
 
 	if err != nil {
 		return "", fmt.Errorf("intasend request failed: %w", err)
