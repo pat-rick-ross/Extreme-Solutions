@@ -43,9 +43,14 @@ mpesa:
   callback_url: https://your-domain.com/api/v1/payments/webhook/daraja
 
 paystack:
-  secret_key: "sk_test_your_secret_key"
-  public_key: "pk_test_your_public_key"
-  webhook_url: https://your-domain.com/api/v1/payments/webhook/paystack
+  secret_key: "sk_test_67c0c529d0f1c37d7fdf2332869e7a49344265c7"
+  public_key: "pk_test_7a4f5b95646024d220ce066b2fa320c3e64fc2c8"
+  webhook_url: https://YOUR_ALLOCATED_ALIAS.localhost.run/api/v1/payments/webhook/paystack
+
+intasend:
+  publishable_key: "ISPubKey_test_98b9ce4c-548a-45fe-bc00-87b13a03f071"
+  secret_key: "ISSecretKey_test_6fa35f62-4e62-442a-bb93-059574cdbdc3"
+  environment: "sandbox" # or "live"
 
 sms:
   provider: africastalking

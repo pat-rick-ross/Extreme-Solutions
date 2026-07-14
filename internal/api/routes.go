@@ -29,10 +29,11 @@ func NewServer(
 	paymentRepo repository.PaymentRepository,
 	packageRepo repository.PackageRepository,
 	cache repository.CacheRepository,
-	redisClient *redis.Client, // Concrete type injection received here
+	redisClient *redis.Client,
 	provisioner *network.Provisioner,
 	darajaSvc *payment.DarajaService,
 	paystackSvc *payment.PaystackService,
+	intasendSvc *payment.IntaSendService, // Added IntaSend
 	reconciler *payment.PaymentReconciler,
 	invoiceGenerator *billing.InvoiceGenerator,
 	proRater *billing.ProRater,
@@ -43,8 +44,7 @@ func NewServer(
 	}
 
 	s.setupMiddleware()
-	// Fixed: Added redisClient to the setupRoutes call parameter sequence
-	s.setupRoutes(customerRepo, invoiceRepo, paymentRepo, packageRepo, cache, redisClient, provisioner, darajaSvc, paystackSvc, reconciler, invoiceGenerator, proRater)
+	s.setupRoutes(customerRepo, invoiceRepo, paymentRepo, packageRepo, cache, redisClient, provisioner, darajaSvc, paystackSvc, intasendSvc, reconciler, invoiceGenerator, proRater)
 
 	return s
 }
@@ -72,10 +72,11 @@ func (s *Server) setupRoutes(
 	paymentRepo repository.PaymentRepository,
 	packageRepo repository.PackageRepository,
 	cache repository.CacheRepository,
-	redisClient *redis.Client, // Fixed: Added signature definition here to wire up line 90
+	redisClient *redis.Client,
 	provisioner *network.Provisioner,
 	darajaSvc *payment.DarajaService,
 	paystackSvc *payment.PaystackService,
+	intasendSvc *payment.IntaSendService, // Added IntaSend
 	reconciler *payment.PaymentReconciler,
 	invoiceGenerator *billing.InvoiceGenerator,
 	proRater *billing.ProRater,
@@ -83,32 +84,33 @@ func (s *Server) setupRoutes(
 	// Initialize domain feature handlers
 	customerHandler := handlers.NewCustomerHandler(customerRepo, packageRepo)
 	invoiceHandler := handlers.NewInvoiceHandler(invoiceRepo, customerRepo)
-	paymentHandler := handlers.NewPaymentHandler(paymentRepo, invoiceRepo, customerRepo, darajaSvc, paystackSvc)
-	authHandler := handlers.NewAuthHandler(customerRepo, cache)
-	webhookHandler := handlers.NewWebhookHandler(paystackSvc, darajaSvc, reconciler)
 
-	// App Rate limiter mapping (Now cleanly picks up the injected parameter context)
+	// Injecting IntaSend into PaymentHandler
+	paymentHandler := handlers.NewPaymentHandler(paymentRepo, invoiceRepo, customerRepo, darajaSvc, paystackSvc, intasendSvc)
+
+	authHandler := handlers.NewAuthHandler(customerRepo, cache, s.cfg)
+	// In setupRoutes:
+	// Initialize your webhook handler with the new service
+	webhookHandler := handlers.NewWebhookHandler(paystackSvc, darajaSvc, intasendSvc, reconciler)
 	rateLimiter := customMiddleware.NewRateLimiter(redisClient, 100, time.Minute)
 
-	// Public routes
+	// Routes ...
 	s.router.Group(func(r chi.Router) {
 		r.Post("/api/v1/auth/login", authHandler.Login)
 		r.Post("/api/v1/auth/register", authHandler.Register)
 		r.Post("/api/v1/auth/refresh", authHandler.Refresh)
 	})
 
-	// Webhook routes (Completely public with internal cryptographic validation)
 	s.router.Group(func(r chi.Router) {
 		r.Post("/api/v1/payments/webhook/daraja", webhookHandler.HandleDarajaWebhook)
 		r.Post("/api/v1/payments/webhook/paystack", webhookHandler.HandlePaystackWebhook)
+		// Add IntaSend Webhook here when implemented
 	})
 
-	// Protected routes
 	s.router.Group(func(r chi.Router) {
 		r.Use(customMiddleware.Auth(s.cfg.JWT.Secret))
 		r.Use(rateLimiter.Limit)
 
-		// Customer routing definitions
 		r.Route("/api/v1/customers", func(r chi.Router) {
 			r.Get("/", customerHandler.List)
 			r.Post("/", customerHandler.Create)
@@ -117,7 +119,6 @@ func (s *Server) setupRoutes(
 			r.Delete("/{id}", customerHandler.Delete)
 		})
 
-		// Invoice execution routes
 		r.Route("/api/v1/invoices", func(r chi.Router) {
 			r.Get("/", invoiceHandler.List)
 			r.Get("/{id}", invoiceHandler.GetByID)
@@ -125,7 +126,6 @@ func (s *Server) setupRoutes(
 			r.Post("/generate", invoiceHandler.Generate)
 		})
 
-		// Multi-Gateway explicit payment invocation paths
 		r.Route("/api/v1/payments", func(r chi.Router) {
 			r.Post("/initiate", paymentHandler.InitiatePayment)
 			r.Get("/{id}", paymentHandler.GetPaymentStatus)
@@ -133,7 +133,6 @@ func (s *Server) setupRoutes(
 		})
 	})
 
-	// Microservices health indicators
 	s.router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))

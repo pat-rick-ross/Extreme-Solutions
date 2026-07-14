@@ -18,6 +18,7 @@ type PaymentHandler struct {
 	customerRepo repository.CustomerRepository
 	darajaSvc    *payment.DarajaService
 	paystackSvc  *payment.PaystackService
+	intasendSvc  *payment.IntaSendService // <--- THIS IS THE MISSING FIELD
 }
 
 func NewPaymentHandler(
@@ -26,6 +27,8 @@ func NewPaymentHandler(
 	customerRepo repository.CustomerRepository,
 	darajaSvc *payment.DarajaService,
 	paystackSvc *payment.PaystackService,
+	intasendSvc *payment.IntaSendService, // Add this parameter
+
 ) *PaymentHandler {
 	return &PaymentHandler{
 		paymentRepo:  paymentRepo,
@@ -33,6 +36,7 @@ func NewPaymentHandler(
 		customerRepo: customerRepo,
 		darajaSvc:    darajaSvc,
 		paystackSvc:  paystackSvc,
+		intasendSvc:  intasendSvc, // Add this assignment
 	}
 }
 
@@ -43,13 +47,26 @@ func (h *PaymentHandler) InitiatePayment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Native input field validation fallback (Aligned with domain properties)
-	if req.InvoiceID == "" || req.Amount <= 0 || req.Phone == "" {
-		respondError(w, http.StatusBadRequest, "Missing required payment parameters (invoice_id, amount, phone)")
+	// Validate required fields including the new Gateway selection
+	if req.InvoiceID == "" || req.Amount <= 0 || req.Phone == "" || req.Gateway == "" {
+		respondError(w, http.StatusBadRequest, "Missing required payment parameters (invoice_id, amount, phone, gateway)")
 		return
 	}
 
-	// Get invoice
+	// Dynamically select the gateway based on request
+	var gateway payment.PaymentGateway
+	switch req.Gateway {
+	case "daraja":
+		gateway = h.darajaSvc
+	case "intasend":
+		gateway = h.intasendSvc
+	case "paystack":
+		gateway = h.paystackSvc
+	default:
+		respondError(w, http.StatusBadRequest, "Unsupported payment gateway: "+req.Gateway)
+		return
+	}
+
 	invoiceID, err := uuid.Parse(req.InvoiceID)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid invoice ID format")
@@ -72,7 +89,6 @@ func (h *PaymentHandler) InitiatePayment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get customer
 	customer, err := h.customerRepo.GetByID(r.Context(), invoice.CustomerID)
 	if err != nil {
 		log.Printf("[ERROR] Failed to resolve client metadata profile for customer %s: %v", invoice.CustomerID, err)
@@ -80,14 +96,13 @@ func (h *PaymentHandler) InitiatePayment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Create dynamic transaction record context layout
 	paymentRecord := &domain.Payment{
-		InvoiceID:  &invoice.ID, // Assigned using memory pointer location allocation
+		InvoiceID:  &invoice.ID,
 		CustomerID: customer.ID,
 		Amount:     req.Amount,
 		Status:     "pending",
-		Method:     "mpesa",
-		Provider:   "mpesa",
+		Method:     req.Gateway,
+		Provider:   gateway.ProviderName(),
 		MpesaPhone: req.Phone,
 		Reference:  uuid.New().String(),
 	}
@@ -98,18 +113,16 @@ func (h *PaymentHandler) InitiatePayment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Dynamic fallback for the Daraja statement account reference identifier
 	accountRef := invoice.Reference
 	if accountRef == "" {
 		accountRef = "INV-" + paymentRecord.Reference[:8]
 	}
 
-	// Match signature: want (context.Context, string, float64, string)
-	stkRef, err := h.darajaSvc.InitiateSTKPush(r.Context(), req.Phone, req.Amount, accountRef)
+	// Polymorphic call to the selected gateway
+	stkRef, err := gateway.InitiateSTKPush(r.Context(), req.Phone, req.Amount, accountRef)
 	if err != nil {
-		log.Printf("[ERROR] Safaricom Daraja STK execution gateway exception encountered: %v", err)
+		log.Printf("[ERROR] Gateway %s execution exception encountered: %v", req.Gateway, err)
 
-		// Fallback mutation strategy to handle the absence of UpdateStatus interface methods
 		paymentRecord.Status = "failed"
 		_ = h.paymentRepo.Update(r.Context(), paymentRecord)
 
@@ -117,33 +130,29 @@ func (h *PaymentHandler) InitiatePayment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Safe serialization for raw jsonb database payload slices targeting tracking fields
 	metadataMap := map[string]string{
-		"daraja_tracking_reference": stkRef,
+		"tracking_reference": stkRef,
+		"gateway":            req.Gateway,
 	}
 	if metadataBytes, err := json.Marshal(metadataMap); err == nil {
 		paymentRecord.Metadata = metadataBytes
-		if err := h.paymentRepo.Update(r.Context(), paymentRecord); err != nil {
-			log.Printf("[WARN] Error persisting transaction reference identifier metadata: %v", err)
-		}
+		_ = h.paymentRepo.Update(r.Context(), paymentRecord)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"payment":          paymentRecord,
 		"tracking_id":      stkRef,
-		"customer_message": "STK Push prompt broadcasted successfully to your mobile phone.",
+		"customer_message": "Payment prompt broadcasted successfully via " + req.Gateway,
 	})
 }
 
 func (h *PaymentHandler) GetPaymentStatus(w http.ResponseWriter, r *http.Request) {
-	// 1. Grab the raw string param directly from Chi's multiplexer
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "Missing payment ID")
 		return
 	}
 
-	// 2. Pass the raw string "id" directly since your repo expects a string value
 	paymentRecord, err := h.paymentRepo.GetByID(r.Context(), id)
 	if err != nil {
 		log.Printf("[ERROR] Failed to fetch target payment record details %s: %v", id, err)
@@ -151,7 +160,7 @@ func (h *PaymentHandler) GetPaymentStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if paymentRecord == nil {
-		respondError(w, http.StatusNotFound, "Transaction data file profile not found")
+		respondError(w, http.StatusNotFound, "Transaction data profile not found")
 		return
 	}
 
@@ -161,7 +170,7 @@ func (h *PaymentHandler) GetPaymentStatus(w http.ResponseWriter, r *http.Request
 func (h *PaymentHandler) GetCustomerPayments(w http.ResponseWriter, r *http.Request) {
 	customerID, ok := r.Context().Value("customer_id").(uuid.UUID)
 	if !ok {
-		respondError(w, http.StatusUnauthorized, "Invalid context context session scope validation mapping")
+		respondError(w, http.StatusUnauthorized, "Invalid context session scope")
 		return
 	}
 
@@ -170,8 +179,8 @@ func (h *PaymentHandler) GetCustomerPayments(w http.ResponseWriter, r *http.Requ
 
 	payments, total, err := h.paymentRepo.ListByCustomerID(r.Context(), customerID, page, pageSize)
 	if err != nil {
-		log.Printf("[ERROR] Failed to query dynamic subscriber list collection for owner account ID %s: %v", customerID, err)
-		respondError(w, http.StatusInternalServerError, "Failed to parse records data trace")
+		log.Printf("[ERROR] Failed to query subscriber payment list: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to parse records")
 		return
 	}
 

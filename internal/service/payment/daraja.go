@@ -51,7 +51,7 @@ func NewDarajaService(cfg *config.Config) *DarajaService {
 }
 
 func (d *DarajaService) ProviderName() string {
-	return "Safaricom_Daraja_API"
+	return "daraja"
 }
 
 func (d *DarajaService) getBaseURL() string {

@@ -67,17 +67,31 @@ func main() {
 	packageRepo := postgres.NewPackageRepository(db)
 	cache := postgres.NewCache(redisClient)
 
-	// Fixed: Casing aligned with config.Config field definitions (Mikrotik instead of MikroTik)
 	provisioner := network.NewProvisioner(cfg.Mikrotik)
+
+	// Initialize Payment Services
 	darajaSvc := payment.NewDarajaService(cfg)
+	paystackSvc := payment.NewPaystackService(cfg)
+	intasendSvc := payment.NewIntaSendService(cfg)
+
+	// FIX: Match the required 4-argument constructor signature
+	reconciler := payment.NewPaymentReconciler(
+		paymentRepo,
+		invoiceRepo,
+		customerRepo,
+		provisioner,
+	)
+
 	proRater := billing.NewProRater()
 	invoiceGenerator := billing.NewInvoiceGenerator(invoiceRepo, customerRepo, packageRepo)
 
+	// ... rest of your code remains the same ...
 	// Background Automated Suspension Loop
 	suspensionWorker := worker.NewSuspensionChecker(invoiceRepo, customerRepo, provisioner, 1*time.Hour)
 	suspensionWorker.Start(context.Background())
 
 	// Initialize API router container instance
+	// Update these parameters to match your NewServer signature
 	server := api.NewServer(
 		cfg,
 		customerRepo,
@@ -88,8 +102,9 @@ func main() {
 		redisClient,
 		provisioner,
 		darajaSvc,
-		nil,
-		nil,
+		paystackSvc, // Now passing initialized Paystack
+		intasendSvc, // Now passing initialized IntaSend
+		reconciler,
 		invoiceGenerator,
 		proRater,
 	)

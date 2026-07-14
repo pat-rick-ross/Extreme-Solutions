@@ -3,12 +3,12 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
-	//"Extreme-Solutions/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
@@ -24,7 +24,30 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// Change the function signature to accept the secret key directly
+// GenerateToken creates a signed JWT string using the user's details and runtime configuration.
+// Call this function directly inside your Login Handler function!
+func GenerateToken(jwtSecret string, userID uuid.UUID, email, role string, duration time.Duration) (string, error) {
+	claims := &Claims{
+		UserID: userID.String(),
+		Email:  email,
+		Role:   role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signedToken, err := token.SignedString([]byte(jwtSecret))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %w", err)
+	}
+
+	return signedToken, nil
+}
+
+// Auth verifies incoming JWT strings on protected endpoints
 func Auth(jwtSecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

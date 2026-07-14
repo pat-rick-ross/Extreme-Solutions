@@ -30,4 +30,5 @@ type PaymentInitiateRequest struct {
 	Phone     string  `json:"phone"`
 	Amount    float64 `json:"amount"`
 	InvoiceID string  `json:"invoice_id"`
+	Gateway   string  `json:"gateway"`
 }

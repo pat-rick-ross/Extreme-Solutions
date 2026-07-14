@@ -2,111 +2,85 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"log"
 	"time"
 
 	"Extreme-Solutions/internal/domain"
 	"Extreme-Solutions/internal/repository"
-	"github.com/google/uuid"
-	"github.com/hibiken/asynq"
 )
 
-const TypeInvoiceGeneration = "invoice:generate"
-
-type InvoiceGenerationPayload struct {
-	CustomerID string `json:"customer_id"`
-	Month      int    `json:"month"`
-	Year       int    `json:"year"`
-}
-
 type InvoiceGenerator struct {
-	customerRepo repository.CustomerRepository
 	invoiceRepo  repository.InvoiceRepository
-	packageRepo  repository.PackageRepository // Added package visibility
+	customerRepo repository.CustomerRepository
+	packageRepo  repository.PackageRepository
 }
 
 func NewInvoiceGenerator(
-	customerRepo repository.CustomerRepository,
-	invoiceRepo repository.InvoiceRepository,
-	packageRepo repository.PackageRepository,
+	ir repository.InvoiceRepository,
+	cr repository.CustomerRepository,
+	pr repository.PackageRepository,
 ) *InvoiceGenerator {
 	return &InvoiceGenerator{
-		customerRepo: customerRepo,
-		invoiceRepo:  invoiceRepo,
-		packageRepo:  packageRepo,
+		invoiceRepo:  ir,
+		customerRepo: cr,
+		packageRepo:  pr,
 	}
 }
 
-func (w *InvoiceGenerator) HandleInvoiceGeneration(ctx context.Context, t *asynq.Task) error {
-	var payload InvoiceGenerationPayload
-	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
-		return fmt.Errorf("failed to unmarshal payload: %w", err)
-	}
-
-	log.Printf("[INFO] Generating invoice for Customer ID: %s, Period: %02d/%d", payload.CustomerID, payload.Month, payload.Year)
-
-	customerID, err := uuid.Parse(payload.CustomerID)
+func (ig *InvoiceGenerator) GenerateMonthlyInvoices(ctx context.Context) error {
+	customers, err := ig.customerRepo.ListActive(ctx)
 	if err != nil {
-		return fmt.Errorf("invalid customer ID: %w", err)
+		return fmt.Errorf("failed to pull active billing pool: %w", err)
 	}
 
-	customer, err := w.customerRepo.GetByID(ctx, customerID)
-	if err != nil {
-		return fmt.Errorf("failed to get customer: %w", err)
-	}
-	if customer == nil {
-		return fmt.Errorf("customer not found")
-	}
+	now := time.Now()
+	_, month, year := now.Date()
 
-	// 1. Safe extraction of price metrics from related subscription package
-	var packagePrice float64 = 0.0
-	packageName := "Base Plan"
+	for _, customer := range customers {
+		if customer.PackageID == nil {
+			log.Printf("[WARN] Skipping billing for customer %s; no package ID assigned", customer.ID.String())
+			continue
+		}
 
-	if customer.PackageID != nil {
-		pkg, err := w.packageRepo.GetByID(ctx, *customer.PackageID)
+		pkg, err := ig.packageRepo.GetByID(ctx, *customer.PackageID)
 		if err != nil {
-			return fmt.Errorf("failed to load package details: %w", err)
+			log.Printf("[ERROR] Skipping billing for customer %s; package resolution error: %v", customer.ID.String(), err)
+			continue
 		}
-		if pkg != nil {
-			packagePrice = pkg.Price
-			packageName = pkg.Name
+
+		invoiceRef := fmt.Sprintf("INV-%d-%s-%s", year, month.String()[:3], customer.ID.String())
+
+		exists, _ := ig.invoiceRepo.ExistsByReference(ctx, invoiceRef)
+		if exists {
+			continue
+		}
+
+		dueDate := time.Date(year, month, 5, 23, 59, 59, 0, time.Local)
+
+		// Updated struct initialization with sql.NullString
+		inv := &domain.Invoice{
+			CustomerID:  customer.ID,
+			Number:      invoiceRef,
+			Amount:      pkg.Price,
+			Total:       pkg.Price,
+			Status:      "pending",
+			DueDate:     dueDate,
+			PeriodStart: time.Date(year, month, 1, 0, 0, 0, 0, time.Local),
+			PeriodEnd:   time.Date(year, month, 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, -1),
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Description: sql.NullString{
+				String: fmt.Sprintf("ISP Service - %s (%s)", pkg.Name, month.String()),
+				Valid:  true,
+			},
+		}
+
+		if err := ig.invoiceRepo.Create(ctx, inv); err != nil {
+			log.Printf("[CRITICAL] Could not persist invoice statement for user %s: %v", customer.ID.String(), err)
 		}
 	}
 
-	invoiceNumber := generateInvoiceNumber()
-
-	// 2. Map directly to fields visible in image_0df83a.png
-	invoice := &domain.Invoice{
-		ID:          uuid.New(),
-		CustomerID:  customer.ID,
-		Number:      invoiceNumber,
-		Amount:      packagePrice,
-		Tax:         packagePrice * 0.16, // 16% VAT
-		Total:       packagePrice * 1.16,
-		Status:      "pending", // Inline string literal matching comment in image
-		Description: fmt.Sprintf("ISP Service - %s (%s)", packageName, time.Now().Format("January 2006")),
-		PeriodStart: time.Date(payload.Year, time.Month(payload.Month), 1, 0, 0, 0, 0, time.UTC),
-		PeriodEnd:   time.Date(payload.Year, time.Month(payload.Month+1), 0, 23, 59, 59, 0, time.UTC),
-		DueDate:     time.Date(payload.Year, time.Month(payload.Month), 15, 0, 0, 0, 0, time.UTC),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
-
-	if err := w.invoiceRepo.Create(ctx, invoice); err != nil {
-		return fmt.Errorf("failed to create invoice: %w", err)
-	}
-
-	log.Printf("[INFO] Invoice %s generated successfully. Total: %.2f", invoice.Number, invoice.Total)
 	return nil
-}
-
-func generateInvoiceNumber() string {
-	return fmt.Sprintf("INV-%d%02d%02d-%04d",
-		time.Now().Year(),
-		time.Now().Month(),
-		time.Now().Day(),
-		time.Now().UnixNano()%10000,
-	)
 }

@@ -30,13 +30,11 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Native Validation Fallback: Ensures required fields are present without external dependencies
 	if req.FirstName == "" || req.LastName == "" || req.Email == "" || req.Phone == "" || req.PackageID == "" {
 		respondError(w, http.StatusBadRequest, "Missing required profile registration parameters")
 		return
 	}
 
-	// Check if email already exists
 	existing, err := h.customerRepo.GetByEmail(r.Context(), req.Email)
 	if err != nil {
 		log.Printf("[ERROR] Failed to check existing customer by email: %v", err)
@@ -48,7 +46,6 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if phone already exists
 	existing, err = h.customerRepo.GetByPhone(r.Context(), req.Phone)
 	if err != nil {
 		log.Printf("[ERROR] Failed to check existing customer by phone: %v", err)
@@ -60,14 +57,12 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse package ID
 	packageID, err := uuid.Parse(req.PackageID)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid package ID")
 		return
 	}
 
-	// Verify package exists
 	pkg, err := h.packageRepo.GetByID(r.Context(), packageID)
 	if err != nil {
 		log.Printf("[ERROR] Failed to get package %s: %v", packageID, err)
@@ -84,8 +79,9 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		LastName:  req.LastName,
 		Email:     req.Email,
 		Phone:     req.Phone,
-		Address:   req.Address,
-		PackageID: &packageID, // Assigned cleanly via pointer memory location allocation
+		// Using the helper to convert string to sql.NullString
+		Address:   NewNullString(req.Address),
+		PackageID: &packageID,
 	}
 
 	if err := h.customerRepo.Create(r.Context(), customer); err != nil {
@@ -176,7 +172,6 @@ func (h *CustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update mutation fields safely
 	if req.FirstName != "" {
 		customer.FirstName = req.FirstName
 	}
@@ -189,8 +184,9 @@ func (h *CustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.Phone != "" {
 		customer.Phone = req.Phone
 	}
+	// Using the helper here as well
 	if req.Address != "" {
-		customer.Address = req.Address
+		customer.Address = NewNullString(req.Address)
 	}
 	if req.PackageID != "" {
 		packageID, err := uuid.Parse(req.PackageID)
@@ -198,7 +194,7 @@ func (h *CustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "Invalid package ID")
 			return
 		}
-		customer.PackageID = &packageID // Direct pointer location reassignment
+		customer.PackageID = &packageID
 	}
 
 	if err := h.customerRepo.Update(r.Context(), customer); err != nil {

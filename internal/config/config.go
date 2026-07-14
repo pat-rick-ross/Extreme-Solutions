@@ -19,6 +19,7 @@ type Config struct {
 	Email    EmailConfig    `yaml:"email"`
 	Queue    QueueConfig    `yaml:"queue"`
 	Paystack PaystackConfig `yaml:"paystack"` // <-- MUST BE CAPITALIZED 'Paystack' here
+	IntaSend IntaSendConfig `yaml:"intasend"` // Add this
 }
 
 type AppConfig struct {
@@ -79,6 +80,12 @@ type PaystackConfig struct {
 	SecretKey  string `yaml:"secret_key"`
 	PublicKey  string `yaml:"public_key"`
 	WebhookURL string `yaml:"webhook_url"`
+}
+
+type IntaSendConfig struct {
+	PublishableKey string `yaml:"publishable_key"`
+	SecretKey      string `yaml:"secret_key"`
+	Environment    string `yaml:"environment"`
 }
 
 type SMSConfig struct {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -29,10 +30,13 @@ func NewPaystackService(cfg *config.Config) *PaystackService {
 }
 
 func (p *PaystackService) ProviderName() string {
-	return "Paystack_Gateway_Fallback"
+	return "paystack"
 }
 
 func (p *PaystackService) InitiateSTKPush(ctx context.Context, phone string, amount float64, accountRef string) (string, error) {
+	if p.client == nil {
+		log.Panic("Paystack client is nil! Check NewPaystackService initialization.")
+	}
 	url := "https://api.paystack.co/charge"
 	minorUnitsAmount := int(amount * 100)
 

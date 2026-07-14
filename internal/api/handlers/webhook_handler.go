@@ -13,13 +13,20 @@ import (
 type WebhookHandler struct {
 	paystackService *payment.PaystackService
 	darajaService   *payment.DarajaService
-	reconciler      *payment.PaymentReconciler // Core service layer worker dependency
+	intasendService *payment.IntaSendService // 1. Add this field
+	reconciler      *payment.PaymentReconciler
 }
 
-func NewWebhookHandler(p *payment.PaystackService, d *payment.DarajaService, r *payment.PaymentReconciler) *WebhookHandler {
+func NewWebhookHandler(
+	p *payment.PaystackService,
+	d *payment.DarajaService,
+	i *payment.IntaSendService, // 2. Add to constructor
+	r *payment.PaymentReconciler,
+) *WebhookHandler {
 	return &WebhookHandler{
 		paystackService: p,
 		darajaService:   d,
+		intasendService: i, // 3. Assign
 		reconciler:      r,
 	}
 }
@@ -139,6 +146,47 @@ func (h *WebhookHandler) HandlePaystackWebhook(w http.ResponseWriter, r *http.Re
 	accountRef := "INV-XXXX" // Extract this variable value dynamically from custom attributes or metadata payloads
 	if err := h.reconciler.ProcessSuccessfulPayment(r.Context(), paymentRecord, accountRef); err != nil {
 		log.Printf("[ERROR] Webhook processing error encountered: %v", err)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *WebhookHandler) HandleIntaSendWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Decode payload
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Extract relevant data (adapt keys based on IntaSend documentation)
+	// For IntaSend, you typically parse: state, invoice, amount, phone
+	amount := payload["amount"].(float64)
+	state := payload["state"].(string)
+
+	if state != "COMPLETE" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	paymentRecord := &domain.Payment{
+		Amount:   amount,
+		Method:   "intasend",
+		Provider: "IntaSend_API",
+		Status:   "completed",
+	}
+
+	log.Printf("[✓ SUCCESS] IntaSend processed transaction of %.2f", amount)
+
+	// Reconcile
+	if err := h.reconciler.ProcessSuccessfulPayment(r.Context(), paymentRecord, "INV-XXXX"); err != nil {
+		log.Printf("[ERROR] Webhook processing error: %v", err)
 	}
 
 	w.WriteHeader(http.StatusOK)

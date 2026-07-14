@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"time"
@@ -9,19 +10,19 @@ import (
 )
 
 type Customer struct {
-	ID          uuid.UUID  `json:"id"`
-	FirstName   string     `json:"first_name"`
-	LastName    string     `json:"last_name"`
-	Email       string     `json:"email"`
-	Phone       string     `json:"phone"`
-	Address     string     `json:"address,omitempty"`
-	PackageID   *uuid.UUID `json:"package_id,omitempty"` // Pointer handles nullable foreign keys cleanly
-	Balance     float64    `json:"balance"`
-	Status      string     `json:"status"` // "pending", "active", "suspended", "terminated"
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	SuspendedAt *time.Time `json:"suspended_at,omitempty"`
-	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	ID          uuid.UUID      `json:"id"`
+	FirstName   string         `json:"first_name"`
+	LastName    string         `json:"last_name"`
+	Email       string         `json:"email"`
+	Phone       string         `json:"phone"`
+	Address     sql.NullString `json:"address,omitempty"`
+	PackageID   *uuid.UUID     `json:"package_id,omitempty"` // Pointer handles nullable foreign keys cleanly
+	Balance     float64        `json:"balance"`
+	Status      string         `json:"status"` // "pending", "active", "suspended", "terminated"
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	SuspendedAt *time.Time     `json:"suspended_at,omitempty"`
+	LastLoginAt *time.Time     `json:"last_login_at,omitempty"`
 
 	// Network mapping properties required by your MikroTik Provisioner pipeline
 	MikrotikUser string `json:"mikrotik_user,omitempty"`
