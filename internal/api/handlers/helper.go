@@ -1,10 +1,19 @@
 package handlers
 
 import (
+	"database/sql" // Required for sql.NullString
 	"encoding/json"
 	"net/http"
 	"strconv"
 )
+
+// NewNullString converts a string to sql.NullString, treating empty strings as NULL
+func NewNullString(s string) sql.NullString {
+	return sql.NullString{
+		String: s,
+		Valid:  s != "",
+	}
+}
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")

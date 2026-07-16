@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,39 +11,45 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	// External packages
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
-	"github.com/your-org/isp-billing/internal/api"
-	"github.com/your-org/isp-billing/internal/config"
-	"github.com/your-org/isp-billing/internal/pkg/logger"
-	"github.com/your-org/isp-billing/internal/repository/postgres"
-	redisRepo "github.com/your-org/isp-billing/internal/repository/redis"
-	"github.com/your-org/isp-billing/internal/service/billing"
-	"github.com/your-org/isp-billing/internal/service/network"
-	"github.com/your-org/isp-billing/internal/service/payment"
+
+	// Workspace package references
+	"Extreme-Solutions/internal/api"
+	"Extreme-Solutions/internal/config"
+	"Extreme-Solutions/internal/repository/postgres"
+	"Extreme-Solutions/internal/service/billing"
+	"Extreme-Solutions/internal/service/network"
+	"Extreme-Solutions/internal/service/payment"
+	"Extreme-Solutions/internal/worker"
 )
 
 func main() {
-	// Load .env file
+	// 1. Load .env file explicitly into environment memory layer if you use one
 	if err := godotenv.Load(); err != nil {
-		log.Println("Warning: .env file not found, using environment variables")
+		log.Println("[INFO] No .env file found, relying purely on YAML and system environment variables")
 	}
 
-	// Load configuration from env
-	cfg := config.LoadFromEnv()
-
-	// Initialize logger
-	logger.Init(cfg.App.LogLevel)
-
-	// Connect to PostgreSQL
-	dbPool, err := pgxpool.New(context.Background(), getDBConnectionString(cfg))
+	// 2. Point directly to your active config.yaml layout path
+	cfg, err := config.Load("internal/config/config.yaml") // Aligned path parameter
 	if err != nil {
-		logger.Fatal("Failed to connect to database", map[string]interface{}{"error": err})
+		log.Fatalf("Critical Error: Failed to parse configuration specifications from file: %v", err)
 	}
-	defer dbPool.Close()
 
-	// Connect to Redis
+	// 3. Connect to PostgreSQL via database/sql pgx wrapper
+	connString := getDBConnectionString(cfg)
+	db, err := sql.Open("pgx", connString)
+	if err != nil {
+		log.Fatalf("Failed to open connection database handle: %v", err)
+	}
+	defer db.Close()
+
+	db.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+	db.SetMaxIdleConns(cfg.Database.MaxOpenConns / 2)
+
+	// 4. Connect to Redis Instance
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),
 		Password: cfg.Redis.Password,
@@ -50,22 +57,41 @@ func main() {
 	})
 	defer redisClient.Close()
 
-	// Initialize repositories
-	customerRepo := postgres.NewCustomerRepository(dbPool)
-	invoiceRepo := postgres.NewInvoiceRepository(dbPool)
-	paymentRepo := postgres.NewPaymentRepository(dbPool)
-	packageRepo := postgres.NewPackageRepository(dbPool)
+	// ==========================================
+	// LAYERS ARCHITECTURE INITIALIZATION
+	// ==========================================
 
-	// Initialize cache
-	cache := redisRepo.NewCache(redisClient)
+	customerRepo := postgres.NewCustomerRepository(db)
+	invoiceRepo := postgres.NewInvoiceRepository(db)
+	paymentRepo := postgres.NewPaymentRepository(db)
+	packageRepo := postgres.NewPackageRepository(db)
+	cache := postgres.NewCache(redisClient)
 
-	// Initialize services
-	provisioner := network.NewProvisioner(cfg.MikroTik)
-	mpesaService := payment.NewMPESAService(cfg.MPESA)
-	invoiceGenerator := billing.NewInvoiceGenerator(invoiceRepo, customerRepo, paymentRepo, cache)
+	provisioner := network.NewProvisioner(cfg.Mikrotik)
+
+	// Initialize Payment Services
+	darajaSvc := payment.NewDarajaService(cfg)
+	paystackSvc := payment.NewPaystackService(cfg)
+	intasendSvc := payment.NewIntaSendService(cfg)
+
+	// FIX: Match the required 4-argument constructor signature
+	reconciler := payment.NewPaymentReconciler(
+		paymentRepo,
+		invoiceRepo,
+		customerRepo,
+		provisioner,
+	)
+
 	proRater := billing.NewProRater()
+	invoiceGenerator := billing.NewInvoiceGenerator(invoiceRepo, customerRepo, packageRepo)
 
-	// Initialize API server
+	// ... rest of your code remains the same ...
+	// Background Automated Suspension Loop
+	suspensionWorker := worker.NewSuspensionChecker(invoiceRepo, customerRepo, provisioner, 1*time.Hour)
+	suspensionWorker.Start(context.Background())
+
+	// Initialize API router container instance
+	// Update these parameters to match your NewServer signature
 	server := api.NewServer(
 		cfg,
 		customerRepo,
@@ -73,57 +99,60 @@ func main() {
 		paymentRepo,
 		packageRepo,
 		cache,
+		redisClient,
 		provisioner,
-		mpesaService,
+		darajaSvc,
+		paystackSvc, // Now passing initialized Paystack
+		intasendSvc, // Now passing initialized IntaSend
+		reconciler,
 		invoiceGenerator,
 		proRater,
 	)
 
-	// Start HTTP server
+	// ==========================================
+	// RUNTIME LIFECYCLE SERVING
+	// ==========================================
+
 	addr := fmt.Sprintf(":%d", cfg.App.Port)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      server.Routes(),
-		ReadTimeout:  cfg.App.ReadTimeout,
-		WriteTimeout: cfg.App.WriteTimeout,
-		IdleTimeout:  cfg.App.IdleTimeout,
+		ReadTimeout:  15 * time.Second, // Fixed: Uses clean explicit standard fallbacks
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in goroutine
 	go func() {
-		logger.Info("Starting API server", map[string]interface{}{"port": cfg.App.Port})
+		log.Printf("[INFO] Extreme Solutions Engine online, routing incoming requests at port %d", cfg.App.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start server", map[string]interface{}{"error": err})
+			log.Fatalf("Failed to start HTTP framework engine: %v", err)
 		}
 	}()
 
-	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	logger.Info("Shutting down server...", nil)
+	log.Println("[INFO] Shutting down server gracefully...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("Server forced shutdown", map[string]interface{}{"error": err})
+		log.Fatalf("Server forced structural failure on shutdown: %v", err)
 	}
 
-	logger.Info("Server exited properly", nil)
+	log.Println("[INFO] Server exited cleanly. All interface connections closed.")
 }
 
 func getDBConnectionString(cfg *config.Config) string {
 	return fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=%s&pool_max_conns=%d&pool_max_conn_idle_time=%s",
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		cfg.Database.User,
 		cfg.Database.Password,
 		cfg.Database.Host,
 		cfg.Database.Port,
 		cfg.Database.DBName,
 		cfg.Database.SSLMode,
-		cfg.Database.MaxOpenConns,
-		cfg.Database.MaxLifetime.String(),
 	)
 }

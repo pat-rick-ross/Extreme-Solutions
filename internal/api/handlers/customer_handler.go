@@ -2,27 +2,24 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
+	"Extreme-Solutions/internal/domain"
+	"Extreme-Solutions/internal/repository"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/your-org/isp-billing/internal/domain"
-	"github.com/your-org/isp-billing/internal/pkg/logger"
-	"github.com/your-org/isp-billing/internal/repository"
-	"github.com/your-org/isp-billing/internal/pkg/validator"
 )
 
 type CustomerHandler struct {
 	customerRepo repository.CustomerRepository
 	packageRepo  repository.PackageRepository
-	validator    *validator.Validator
 }
 
 func NewCustomerHandler(customerRepo repository.CustomerRepository, packageRepo repository.PackageRepository) *CustomerHandler {
 	return &CustomerHandler{
 		customerRepo: customerRepo,
 		packageRepo:  packageRepo,
-		validator:    validator.New(),
 	}
 }
 
@@ -33,15 +30,14 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.validator.Validate(req); err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
+	if req.FirstName == "" || req.LastName == "" || req.Email == "" || req.Phone == "" || req.PackageID == "" {
+		respondError(w, http.StatusBadRequest, "Missing required profile registration parameters")
 		return
 	}
 
-	// Check if email already exists
 	existing, err := h.customerRepo.GetByEmail(r.Context(), req.Email)
 	if err != nil {
-		logger.Error("Failed to check existing customer", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to check existing customer by email: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to create customer")
 		return
 	}
@@ -50,10 +46,9 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if phone already exists
 	existing, err = h.customerRepo.GetByPhone(r.Context(), req.Phone)
 	if err != nil {
-		logger.Error("Failed to check existing customer", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to check existing customer by phone: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to create customer")
 		return
 	}
@@ -62,17 +57,15 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse package ID
 	packageID, err := uuid.Parse(req.PackageID)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid package ID")
 		return
 	}
 
-	// Verify package exists
 	pkg, err := h.packageRepo.GetByID(r.Context(), packageID)
 	if err != nil {
-		logger.Error("Failed to get package", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to get package %s: %v", packageID, err)
 		respondError(w, http.StatusInternalServerError, "Failed to create customer")
 		return
 	}
@@ -86,13 +79,13 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		LastName:  req.LastName,
 		Email:     req.Email,
 		Phone:     req.Phone,
-		Address:   req.Address,
-		PackageID: packageID,
-		Package:   pkg,
+		// Using the helper to convert string to sql.NullString
+		Address:   NewNullString(req.Address),
+		PackageID: &packageID,
 	}
 
 	if err := h.customerRepo.Create(r.Context(), customer); err != nil {
-		logger.Error("Failed to create customer", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to persist new customer schema: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to create customer")
 		return
 	}
@@ -110,7 +103,7 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	customer, err := h.customerRepo.GetByID(r.Context(), customerID)
 	if err != nil {
-		logger.Error("Failed to get customer", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to get customer %s: %v", customerID, err)
 		respondError(w, http.StatusInternalServerError, "Failed to get customer")
 		return
 	}
@@ -140,16 +133,16 @@ func (h *CustomerHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	customers, total, err := h.customerRepo.List(r.Context(), filter, page, pageSize)
 	if err != nil {
-		logger.Error("Failed to list customers", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to query paginated customer pool: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to list customers")
 		return
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"data":       customers,
-		"total":      total,
-		"page":       page,
-		"page_size":  pageSize,
+		"data":        customers,
+		"total":       total,
+		"page":        page,
+		"page_size":   pageSize,
 		"total_pages": (total + int64(pageSize) - 1) / int64(pageSize),
 	})
 }
@@ -168,14 +161,9 @@ func (h *CustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.validator.Validate(req); err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
 	customer, err := h.customerRepo.GetByID(r.Context(), customerID)
 	if err != nil {
-		logger.Error("Failed to get customer", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to locate customer reference %s before update: %v", customerID, err)
 		respondError(w, http.StatusInternalServerError, "Failed to update customer")
 		return
 	}
@@ -184,7 +172,6 @@ func (h *CustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update fields
 	if req.FirstName != "" {
 		customer.FirstName = req.FirstName
 	}
@@ -197,11 +184,9 @@ func (h *CustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.Phone != "" {
 		customer.Phone = req.Phone
 	}
+	// Using the helper here as well
 	if req.Address != "" {
-		customer.Address = req.Address
-	}
-	if req.Status != "" {
-		customer.Status = req.Status
+		customer.Address = NewNullString(req.Address)
 	}
 	if req.PackageID != "" {
 		packageID, err := uuid.Parse(req.PackageID)
@@ -209,11 +194,11 @@ func (h *CustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "Invalid package ID")
 			return
 		}
-		customer.PackageID = packageID
+		customer.PackageID = &packageID
 	}
 
 	if err := h.customerRepo.Update(r.Context(), customer); err != nil {
-		logger.Error("Failed to update customer", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to execute update statement transaction: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to update customer")
 		return
 	}
@@ -230,7 +215,7 @@ func (h *CustomerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.customerRepo.Delete(r.Context(), customerID); err != nil {
-		logger.Error("Failed to delete customer", map[string]interface{}{"error": err})
+		log.Printf("[ERROR] Failed to isolate delete hook for target customer %s: %v", customerID, err)
 		respondError(w, http.StatusInternalServerError, "Failed to delete customer")
 		return
 	}

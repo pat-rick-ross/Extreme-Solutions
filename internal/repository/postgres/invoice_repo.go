@@ -2,354 +2,257 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
+	"Extreme-Solutions/internal/domain"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/your-org/isp-billing/internal/domain"
 )
 
-type invoiceRepository struct {
-	db *pgxpool.Pool
+type InvoiceRepository struct {
+	db *sql.DB
 }
 
-func NewInvoiceRepository(db *pgxpool.Pool) *invoiceRepository {
-	return &invoiceRepository{db: db}
+func NewInvoiceRepository(db *sql.DB) *InvoiceRepository {
+	return &InvoiceRepository{db: db}
 }
 
-func (r *invoiceRepository) Create(ctx context.Context, invoice *domain.Invoice) error {
-	if invoice.ID == uuid.Nil {
-		invoice.ID = uuid.New()
-	}
-
+func (r *InvoiceRepository) Create(ctx context.Context, inv *domain.Invoice) error {
 	query := `
 		INSERT INTO invoices (id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`
-
+	if inv.ID == uuid.Nil {
+		inv.ID = uuid.New()
+	}
 	now := time.Now()
-	invoice.CreatedAt = now
-	invoice.UpdatedAt = now
+	inv.CreatedAt = now
+	inv.UpdatedAt = now
 
-	if invoice.Status == "" {
-		invoice.Status = domain.InvoiceStatusPending
-	}
-
-	_, err := r.db.Exec(ctx, query,
-		invoice.ID,
-		invoice.CustomerID,
-		invoice.Number,
-		invoice.Amount,
-		invoice.Tax,
-		invoice.Total,
-		invoice.Status,
-		invoice.Description,
-		invoice.PeriodStart,
-		invoice.PeriodEnd,
-		invoice.DueDate,
-		invoice.CreatedAt,
-		invoice.UpdatedAt,
+	_, err := r.db.ExecContext(ctx, query,
+		inv.ID,
+		inv.CustomerID,
+		inv.Number,
+		inv.Amount,
+		inv.Tax,
+		inv.Total,
+		inv.Status,
+		inv.Description,
+		inv.PeriodStart,
+		inv.PeriodEnd,
+		inv.DueDate,
+		inv.CreatedAt,
+		inv.UpdatedAt,
 	)
-
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to create invoice: %w", err)
+	}
+	return nil
 }
 
-func (r *invoiceRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Invoice, error) {
+func (r *InvoiceRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Invoice, error) {
 	query := `
 		SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at
-		FROM invoices
-		WHERE id = $1
+		FROM invoices WHERE id = $1
 	`
-
-	var invoice domain.Invoice
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&invoice.ID,
-		&invoice.CustomerID,
-		&invoice.Number,
-		&invoice.Amount,
-		&invoice.Tax,
-		&invoice.Total,
-		&invoice.Status,
-		&invoice.Description,
-		&invoice.PeriodStart,
-		&invoice.PeriodEnd,
-		&invoice.DueDate,
-		&invoice.PaidAt,
-		&invoice.PDFURL,
-		&invoice.CreatedAt,
-		&invoice.UpdatedAt,
+	var inv domain.Invoice
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&inv.ID, &inv.CustomerID, &inv.Number, &inv.Amount, &inv.Tax, &inv.Total,
+		&inv.Status, &inv.Description, &inv.PeriodStart, &inv.PeriodEnd, &inv.DueDate,
+		&inv.PaidAt, &inv.PDFURL, &inv.CreatedAt, &inv.UpdatedAt,
 	)
-
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get invoice: %w", err)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-
-	return &invoice, nil
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch invoice by id: %w", err)
+	}
+	return &inv, nil
 }
 
-func (r *invoiceRepository) GetByNumber(ctx context.Context, number string) (*domain.Invoice, error) {
+func (r *InvoiceRepository) GetUnpaidByCustomerID(ctx context.Context, customerID uuid.UUID) ([]domain.Invoice, error) {
 	query := `
 		SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at
-		FROM invoices
-		WHERE number = $1
+		FROM invoices 
+		WHERE customer_id = $1 AND status IN ('pending', 'unpaid')
+		ORDER BY due_date ASC
 	`
-
-	var invoice domain.Invoice
-	err := r.db.QueryRow(ctx, query, number).Scan(
-		&invoice.ID,
-		&invoice.CustomerID,
-		&invoice.Number,
-		&invoice.Amount,
-		&invoice.Tax,
-		&invoice.Total,
-		&invoice.Status,
-		&invoice.Description,
-		&invoice.PeriodStart,
-		&invoice.PeriodEnd,
-		&invoice.DueDate,
-		&invoice.PaidAt,
-		&invoice.PDFURL,
-		&invoice.CreatedAt,
-		&invoice.UpdatedAt,
-	)
-
+	rows, err := r.db.QueryContext(ctx, query, customerID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get invoice by number: %w", err)
-	}
-
-	return &invoice, nil
-}
-
-func (r *invoiceRepository) GetByCustomerID(ctx context.Context, customerID uuid.UUID, page, pageSize int) ([]*domain.Invoice, int64, error) {
-	countQuery := `SELECT COUNT(*) FROM invoices WHERE customer_id = $1`
-	var total int64
-	err := r.db.QueryRow(ctx, countQuery, customerID).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count invoices: %w", err)
-	}
-
-	offset := (page - 1) * pageSize
-	query := `
-		SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at
-		FROM invoices
-		WHERE customer_id = $1
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := r.db.Query(ctx, query, customerID, pageSize, offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get invoices by customer: %w", err)
+		return nil, fmt.Errorf("failed to query unpaid invoices: %w", err)
 	}
 	defer rows.Close()
 
-	var invoices []*domain.Invoice
+	var invoices []domain.Invoice
 	for rows.Next() {
-		var invoice domain.Invoice
+		var inv domain.Invoice
 		err := rows.Scan(
-			&invoice.ID,
-			&invoice.CustomerID,
-			&invoice.Number,
-			&invoice.Amount,
-			&invoice.Tax,
-			&invoice.Total,
-			&invoice.Status,
-			&invoice.Description,
-			&invoice.PeriodStart,
-			&invoice.PeriodEnd,
-			&invoice.DueDate,
-			&invoice.PaidAt,
-			&invoice.PDFURL,
-			&invoice.CreatedAt,
-			&invoice.UpdatedAt,
+			&inv.ID, &inv.CustomerID, &inv.Number, &inv.Amount, &inv.Tax, &inv.Total,
+			&inv.Status, &inv.Description, &inv.PeriodStart, &inv.PeriodEnd, &inv.DueDate,
+			&inv.PaidAt, &inv.PDFURL, &inv.CreatedAt, &inv.UpdatedAt,
 		)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan invoice: %w", err)
+			return nil, fmt.Errorf("failed to scan invoice row: %w", err)
 		}
-		invoices = append(invoices, &invoice)
+		invoices = append(invoices, inv)
 	}
 
-	return invoices, total, nil
-}
-
-func (r *invoiceRepository) List(ctx context.Context, filter *domain.InvoiceFilter) ([]*domain.Invoice, int64, error) {
-	// Implementation similar to customer list with filters
-	// For brevity, simplified version
-	query := `
-		SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at
-		FROM invoices
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2
-	`
-
-	offset := (filter.Page - 1) * filter.PageSize
-	rows, err := r.db.Query(ctx, query, filter.PageSize, offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list invoices: %w", err)
+	if err = rows.Err(); err != nil {
+		return nil, err
 	}
-	defer rows.Close()
-
-	var invoices []*domain.Invoice
-	for rows.Next() {
-		var invoice domain.Invoice
-		err := rows.Scan(
-			&invoice.ID,
-			&invoice.CustomerID,
-			&invoice.Number,
-			&invoice.Amount,
-			&invoice.Tax,
-			&invoice.Total,
-			&invoice.Status,
-			&invoice.Description,
-			&invoice.PeriodStart,
-			&invoice.PeriodEnd,
-			&invoice.DueDate,
-			&invoice.PaidAt,
-			&invoice.PDFURL,
-			&invoice.CreatedAt,
-			&invoice.UpdatedAt,
-		)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan invoice: %w", err)
-		}
-		invoices = append(invoices, &invoice)
-	}
-
-	return invoices, int64(len(invoices)), nil
-}
-
-func (r *invoiceRepository) ListPending(ctx context.Context) ([]*domain.Invoice, error) {
-	query := `
-		SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at
-		FROM invoices
-		WHERE status = $1
-	`
-
-	rows, err := r.db.Query(ctx, query, domain.InvoiceStatusPending)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list pending invoices: %w", err)
-	}
-	defer rows.Close()
-
-	var invoices []*domain.Invoice
-	for rows.Next() {
-		var invoice domain.Invoice
-		err := rows.Scan(
-			&invoice.ID,
-			&invoice.CustomerID,
-			&invoice.Number,
-			&invoice.Amount,
-			&invoice.Tax,
-			&invoice.Total,
-			&invoice.Status,
-			&invoice.Description,
-			&invoice.PeriodStart,
-			&invoice.PeriodEnd,
-			&invoice.DueDate,
-			&invoice.PaidAt,
-			&invoice.PDFURL,
-			&invoice.CreatedAt,
-			&invoice.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan invoice: %w", err)
-		}
-		invoices = append(invoices, &invoice)
-	}
-
 	return invoices, nil
 }
 
-func (r *invoiceRepository) ListOverdue(ctx context.Context) ([]*domain.Invoice, error) {
+func (r *InvoiceRepository) GetAll(ctx context.Context) ([]*domain.Invoice, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at FROM invoices")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var invoices []*domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		// ... scan logic ...
+		invoices = append(invoices, &inv)
+	}
+	return invoices, nil
+}
+
+func (r *InvoiceRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, paidAt *string) error {
+	query := `
+		UPDATE invoices 
+		SET status = $1, paid_at = $2, updated_at = $3 
+		WHERE id = $4
+	`
+	// Fallback conversion parsing to allow strings to cleanly flow into your timestamp columns
+	var parsedTime interface{} = nil
+	if paidAt != nil && *paidAt != "" {
+		t, err := time.Parse(time.RFC3339, *paidAt)
+		if err == nil {
+			parsedTime = t
+		} else {
+			parsedTime = *paidAt // If it's already formatting-compliant string layout
+		}
+	}
+
+	_, err := r.db.ExecContext(ctx, query, status, parsedTime, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update state parameters for invoice record: %w", err)
+	}
+	return nil
+}
+
+// Add these methods at the bottom of your invoice_repo.go file
+
+// MarkAsPaid sets an invoice status explicitly to "paid".
+func (r *InvoiceRepository) MarkAsPaid(ctx context.Context, id uuid.UUID, paidAt time.Time) error {
+	query := `
+		UPDATE invoices 
+		SET status = 'paid', paid_at = $1, updated_at = $2 
+		WHERE id = $3
+	`
+	_, err := r.db.ExecContext(ctx, query, paidAt, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to mark invoice as paid: %w", err)
+	}
+	return nil
+}
+
+// ListOverdue fetches all invoices that remain unpaid past their due date constraint.
+func (r *InvoiceRepository) ListOverdue(ctx context.Context, asOf time.Time) ([]*domain.Invoice, error) {
 	query := `
 		SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at
-		FROM invoices
-		WHERE status = $1 AND due_date < $2
+		FROM invoices 
+		WHERE status IN ('pending', 'unpaid') AND due_date < $1
+		ORDER BY due_date ASC
 	`
-
-	rows, err := r.db.Query(ctx, query, domain.InvoiceStatusPending, time.Now())
+	rows, err := r.db.QueryContext(ctx, query, asOf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list overdue invoices: %w", err)
+		return nil, fmt.Errorf("failed to query overdue invoices: %w", err)
 	}
 	defer rows.Close()
 
 	var invoices []*domain.Invoice
 	for rows.Next() {
-		var invoice domain.Invoice
+		var inv domain.Invoice
 		err := rows.Scan(
-			&invoice.ID,
-			&invoice.CustomerID,
-			&invoice.Number,
-			&invoice.Amount,
-			&invoice.Tax,
-			&invoice.Total,
-			&invoice.Status,
-			&invoice.Description,
-			&invoice.PeriodStart,
-			&invoice.PeriodEnd,
-			&invoice.DueDate,
-			&invoice.PaidAt,
-			&invoice.PDFURL,
-			&invoice.CreatedAt,
-			&invoice.UpdatedAt,
+			&inv.ID, &inv.CustomerID, &inv.Number, &inv.Amount, &inv.Tax, &inv.Total,
+			&inv.Status, &inv.Description, &inv.PeriodStart, &inv.PeriodEnd, &inv.DueDate,
+			&inv.PaidAt, &inv.PDFURL, &inv.CreatedAt, &inv.UpdatedAt,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan invoice: %w", err)
+			return nil, fmt.Errorf("failed to scan overdue invoice row: %w", err)
 		}
-		invoices = append(invoices, &invoice)
+		invoices = append(invoices, &inv)
 	}
 
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	return invoices, nil
 }
 
-func (r *invoiceRepository) Update(ctx context.Context, invoice *domain.Invoice) error {
+func (r *InvoiceRepository) GetByReference(ctx context.Context, reference string) (*domain.Invoice, error) {
 	query := `
-		UPDATE invoices
-		SET amount = $1, tax = $2, total = $3, status = $4, description = $5, period_start = $6, period_end = $7, due_date = $8, pdf_url = $9, updated_at = $10
-		WHERE id = $11
+		SELECT id, customer_id, number, amount, tax, total, status, description, period_start, period_end, due_date, paid_at, pdf_url, created_at, updated_at
+		FROM invoices WHERE number = $1
 	`
-
-	invoice.UpdatedAt = time.Now()
-
-	_, err := r.db.Exec(ctx, query,
-		invoice.Amount,
-		invoice.Tax,
-		invoice.Total,
-		invoice.Status,
-		invoice.Description,
-		invoice.PeriodStart,
-		invoice.PeriodEnd,
-		invoice.DueDate,
-		invoice.PDFURL,
-		invoice.UpdatedAt,
-		invoice.ID,
+	var inv domain.Invoice
+	err := r.db.QueryRowContext(ctx, query, reference).Scan(
+		&inv.ID, &inv.CustomerID, &inv.Number, &inv.Amount, &inv.Tax, &inv.Total,
+		&inv.Status, &inv.Description, &inv.PeriodStart, &inv.PeriodEnd, &inv.DueDate,
+		&inv.PaidAt, &inv.PDFURL, &inv.CreatedAt, &inv.UpdatedAt,
 	)
-
-	return err
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch invoice by reference number: %w", err)
+	}
+	return &inv, nil
 }
 
-func (r *invoiceRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.InvoiceStatus) error {
-	query := `UPDATE invoices SET status = $1, updated_at = $2 WHERE id = $3`
-	_, err := r.db.Exec(ctx, query, status, time.Now(), id)
-	return err
+// Add this method to internal/repository/postgres/invoice_repo.go
+
+func (r *InvoiceRepository) Update(ctx context.Context, inv *domain.Invoice) error {
+	query := `
+		UPDATE invoices 
+		SET customer_id = $1, number = $2, amount = $3, tax = $4, total = $5, 
+		    status = $6, description = $7, period_start = $8, period_end = $9, 
+		    due_date = $10, paid_at = $11, pdf_url = $12, updated_at = $13 
+		WHERE id = $14
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		inv.CustomerID,
+		inv.Number,
+		inv.Amount,
+		inv.Tax,
+		inv.Total,
+		inv.Status,
+		inv.Description,
+		inv.PeriodStart,
+		inv.PeriodEnd,
+		inv.DueDate,
+		inv.PaidAt,
+		inv.PDFURL,
+		time.Now(),
+		inv.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update invoice record: %w", err)
+	}
+	return nil
 }
 
-func (r *invoiceRepository) MarkAsPaid(ctx context.Context, id uuid.UUID, paidAt time.Time) error {
-	query := `UPDATE invoices SET status = $1, paid_at = $2, updated_at = $3 WHERE id = $4`
-	_, err := r.db.Exec(ctx, query, domain.InvoiceStatusPaid, paidAt, time.Now(), id)
-	return err
-}
-
-func (r *invoiceRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM invoices WHERE id = $1`
-	_, err := r.db.Exec(ctx, query, id)
-	return err
+// ExistsByReference checks for duplicate reference identifiers across the persistence layer.
+func (r *InvoiceRepository) ExistsByReference(ctx context.Context, reference string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM invoices WHERE number = $1)`
+	var exists bool
+	err := r.db.QueryRowContext(ctx, query, reference).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to check invoice structural duplication: %w", err)
+	}
+	return exists, nil
 }

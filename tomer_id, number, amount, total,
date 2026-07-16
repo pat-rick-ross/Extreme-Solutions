@@ -1,0 +1,29 @@
+                                    Table "public.invoices"
+    Column    |           Type           | Collation | Nullable |           Default            
+--------------+--------------------------+-----------+----------+------------------------------
+ id           | uuid                     |           | not null | uuid_generate_v4()
+ customer_id  | uuid                     |           | not null | 
+ number       | character varying(50)    |           | not null | 
+ amount       | numeric(10,2)            |           | not null | 
+ tax          | numeric(10,2)            |           |          | 0.00
+ total        | numeric(10,2)            |           | not null | 
+ status       | character varying(20)    |           |          | 'pending'::character varying
+ description  | text                     |           |          | 
+ period_start | timestamp with time zone |           | not null | 
+ period_end   | timestamp with time zone |           | not null | 
+ due_date     | timestamp with time zone |           | not null | 
+ paid_at      | timestamp with time zone |           |          | 
+ pdf_url      | character varying(500)   |           |          | 
+ created_at   | timestamp with time zone |           |          | CURRENT_TIMESTAMP
+ updated_at   | timestamp with time zone |           |          | CURRENT_TIMESTAMP
+Indexes:
+    "invoices_pkey" PRIMARY KEY, btree (id)
+    "idx_invoices_customer_id" btree (customer_id)
+    "idx_invoices_due_date" btree (due_date)
+    "idx_invoices_status" btree (status)
+    "invoices_number_key" UNIQUE CONSTRAINT, btree (number)
+Foreign-key constraints:
+    "invoices_customer_id_fkey" FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+Referenced by:
+    TABLE "payments" CONSTRAINT "payments_invoice_id_fkey" FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
+

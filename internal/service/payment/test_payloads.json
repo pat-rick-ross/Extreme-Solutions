@@ -1,0 +1,14 @@
+{
+  "daraja_payload": {
+    "invoice_id": "00000000-0000-0000-0000-000000000000",
+    "amount": 100.00,
+    "phone": "254116536970",
+    "gateway": "daraja"
+  },
+  "paystack_payload": {
+    "invoice_id": "00000000-0000-0000-0000-000000000000",
+    "amount": 100.00,
+    "phone": "254116536970",
+    "gateway": "paystack"
+  }
+}

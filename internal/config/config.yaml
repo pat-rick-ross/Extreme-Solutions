@@ -7,10 +7,10 @@ app:
 
 database:
   host: localhost
-  port: 5432
-  user: isp_user
-  password: isp_password
-  dbname: isp_billing
+  port: 5433             # Changed from 5432 to your private port
+  user: priomondi        # Changed to match your active local account
+  password: ""           # Empty because we initialized with local trust auth
+  dbname: extreme_isp    # The database namespace you just migrated successfully
   sslmode: disable
   max_open_conns: 25
   max_idle_conns: 5
@@ -25,7 +25,7 @@ redis:
 jwt:
   secret: "your-secret-key-change-in-production"
   access_duration: 15m
-  refresh_duration: 7d
+  refresh_duration: 168h      # Fixed: Changed from 7d to 168h to satisfy time.Duration parsing
 
 mikrotik:
   host: 192.168.88.1
@@ -35,16 +35,22 @@ mikrotik:
   timeout: 30s
 
 mpesa:
-  consumer_key: "your-consumer-key"
-  consumer_secret: "your-consumer-secret"
-  passkey: "your-passkey"
-  shortcode: "174379"
-  environment: sandbox
-  callback_url: https://your-domain.com/webhook/mpesa/callback
-  timeout_url: https://your-domain.com/webhook/mpesa/timeout
-  result_url: https://your-domain.com/webhook/mpesa/result
-  confirmation_url: https://your-domain.com/webhook/mpesa/confirmation
-  validation_url: https://your-domain.com/webhook/mpesa/validation
+  consumer_key: "your-daraja-consumer-key"
+  consumer_secret: "your-daraja-consumer-secret"
+  passkey: "your-bfb61a-stk-passkey"
+  shortcode: "174379"              # Your Business Paybill / Till Number
+  environment: sandbox            # sandbox or production
+  callback_url: https://your-domain.com/api/v1/payments/webhook/daraja
+
+paystack:
+  secret_key: "sk_test_67c0c529d0f1c37d7fdf2332869e7a49344265c7"
+  public_key: "pk_test_7a4f5b95646024d220ce066b2fa320c3e64fc2c8"
+  webhook_url: https://YOUR_ALLOCATED_ALIAS.localhost.run/api/v1/payments/webhook/paystack
+
+intasend:
+  publishable_key: "ISPubKey_test_98b9ce4c-548a-45fe-bc00-87b13a03f071"
+  secret_key: "ISSecretKey_test_6fa35f62-4e62-442a-bb93-059574cdbdc3"
+  environment: "sandbox" # or "live"
 
 sms:
   provider: africastalking

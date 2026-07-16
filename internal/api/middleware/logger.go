@@ -1,31 +1,28 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"time"
-
-	"github.com/your-org/isp-billing/internal/pkg/logger"
 )
 
 func Logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Wrap response writer to capture status code
+		// Wrap response writer to capture status code cleanly
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
 		next.ServeHTTP(wrapped, r)
 
-		// Log request
-		logger.Info("HTTP Request",
-			map[string]interface{}{
-				"method":     r.Method,
-				"path":       r.URL.Path,
-				"status":     wrapped.statusCode,
-				"duration":   time.Since(start).String(),
-				"remote_ip":  r.RemoteAddr,
-				"user_agent": r.UserAgent(),
-			},
+		// Log structured request metrics using native log package
+		log.Printf("[HTTP] %s %s | Status: %d | Duration: %s | IP: %s | UA: %s",
+			r.Method,
+			r.URL.Path,
+			wrapped.statusCode,
+			time.Since(start).String(),
+			r.RemoteAddr,
+			r.UserAgent(),
 		)
 	})
 }

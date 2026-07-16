@@ -3,25 +3,26 @@ package network
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
+	"Extreme-Solutions/internal/config"
+	"Extreme-Solutions/internal/domain"
 	"github.com/go-routeros/routeros"
-	"github.com/your-org/isp-billing/internal/config"
-	"github.com/your-org/isp-billing/internal/domain"
-	"github.com/your-org/isp-billing/internal/pkg/logger"
 )
 
 type Provisioner struct {
 	client *routeros.Client
-	cfg    config.MikroTikConfig
+	cfg    config.MikrotikConfig // Casing aligned with your global config struct configuration properties
 }
 
-func NewProvisioner(cfg config.MikroTikConfig) *Provisioner {
+func NewProvisioner(cfg config.MikrotikConfig) *Provisioner {
 	return &Provisioner{
 		cfg: cfg,
 	}
 }
 
+// Connect instantiates an active connection pool over the RouterOS API socket port
 func (p *Provisioner) Connect() error {
 	client, err := routeros.Dial(
 		fmt.Sprintf("%s:%d", p.cfg.Host, p.cfg.Port),
@@ -29,54 +30,63 @@ func (p *Provisioner) Connect() error {
 		p.cfg.Password,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to connect to MikroTik: %w", err)
+		return fmt.Errorf("failed to connect to MikroTik router: %w", err)
 	}
 	p.client = client
 	return nil
 }
 
-func (p *Provisioner) ProvisionPPPoE(ctx context.Context, customer *domain.Customer, pkg *domain.InternetPackage) error {
+// Close gracefully terminates the active socket connection to prevent resource leaks
+func (p *Provisioner) Close() {
+	if p.client != nil {
+		p.client.Close()
+		p.client = nil
+	}
+}
+
+func (p *Provisioner) ProvisionPPPoE(ctx context.Context, customer *domain.Customer, pkg *domain.Package) error {
 	if p.client == nil {
 		if err := p.Connect(); err != nil {
 			return err
 		}
 	}
 
-	// Generate username and password
+	// Generate clear deterministic structural access credentials
 	username := fmt.Sprintf("ISP-%s", customer.ID.String()[:8])
 	password := generatePassword()
 
-	// Create PPPoE secret
-	cmd := fmt.Sprintf(
-		"/ppp/secret/add name=%s password=%s service=pppoe profile=default disabled=no",
-		username, password,
+	// Execute command via proper RouterOS structural arguments array layout
+	_, err := p.client.Run(
+		"/ppp/secret/add",
+		"=name="+username,
+		"=password="+password,
+		"=service=pppoe",
+		"=profile=default",
+		"=disabled=no",
 	)
-
-	_, err := p.client.Run(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to create PPPoE secret: %w", err)
+		return fmt.Errorf("failed to write customer PPPoE secret: %w", err)
 	}
 
-	// Set bandwidth limits if needed
+	// Attach operational queue control rules instantly if subscription profile exists
 	if pkg != nil {
-		cmd = fmt.Sprintf(
-			"/queue/simple/add name=%s target-addresses=0.0.0.0/0 dst-address=0.0.0.0/0 limit-at=%d/%d max-limit=%d/%d",
-			username,
-			pkg.BandwidthUp*1024, pkg.BandwidthDown*1024,
-			pkg.BandwidthUp*1024, pkg.BandwidthDown*1024,
+		// Calculate limits based on package values
+		limitAttr := fmt.Sprintf("%dk/%dk", int(pkg.Price)*1024, int(pkg.Price)*1024)
+		_, err = p.client.Run(
+			"/queue/simple/add",
+			"=name="+username,
+			"=target="+username, // Maps queue targeting parameter to PPPoE user handle interface
+			"=max-limit="+limitAttr,
+			"=comment=Managed automatically via Extreme Solutions core engine",
 		)
-		_, err := p.client.Run(cmd)
 		if err != nil {
-			logger.Error("Failed to set bandwidth limits", map[string]interface{}{
-				"customer": customer.ID,
-				"error":    err,
-			})
+			log.Printf("[ERROR] Failed to auto-bind profile bandwidth limits for customer %s: %v\n", customer.ID.String(), err)
 		}
 	}
 
-	// Update customer with MikroTik credentials
-	customer.MikroTikUser = username
-	customer.MikroTikID = username // In practice, you'd get the ID from response
+	// Synchronize back directly into the lowercased domain fields
+	customer.MikrotikUser = username
+	customer.MikrotikID = username
 
 	return nil
 }
@@ -88,11 +98,20 @@ func (p *Provisioner) SuspendUser(ctx context.Context, customer *domain.Customer
 		}
 	}
 
-	cmd := fmt.Sprintf("/ppp/secret/disable where name=%s", customer.MikroTikUser)
-	_, err := p.client.Run(cmd)
+	// Using numbers= instead of .id= allows targeting named items by their unique key name safely
+	_, err := p.client.Run(
+		"/ppp/secret/disable",
+		"=numbers="+customer.MikrotikUser,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to suspend user: %w", err)
+		return fmt.Errorf("failed to toggle restriction bit for target subscriber user: %w", err)
 	}
+
+	// Terminate any active sessions to force the router to drop their connection instantly
+	_, _ = p.client.Run(
+		"/ppp/active/remove",
+		"=numbers="+customer.MikrotikUser,
+	)
 
 	return nil
 }
@@ -104,10 +123,12 @@ func (p *Provisioner) ReactivateUser(ctx context.Context, customer *domain.Custo
 		}
 	}
 
-	cmd := fmt.Sprintf("/ppp/secret/enable where name=%s", customer.MikroTikUser)
-	_, err := p.client.Run(cmd)
+	_, err := p.client.Run(
+		"/ppp/secret/enable",
+		"=numbers="+customer.MikrotikUser,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to reactivate user: %w", err)
+		return fmt.Errorf("failed to lift suspension constraint rule flags: %w", err)
 	}
 
 	return nil
@@ -120,13 +141,12 @@ func (p *Provisioner) SetBandwidth(ctx context.Context, customer *domain.Custome
 		}
 	}
 
-	cmd := fmt.Sprintf(
-		"/queue/simple/set %s limit-at=%d/%d max-limit=%d/%d",
-		customer.MikroTikUser,
-		up*1024, down*1024,
-		up*1024, down*1024,
+	limitAttr := fmt.Sprintf("%dk/%dk", up*1024, down*1024)
+	_, err := p.client.Run(
+		"/queue/simple/set",
+		"=numbers="+customer.MikrotikUser,
+		"=max-limit="+limitAttr,
 	)
-	_, err := p.client.Run(cmd)
 	return err
 }
 

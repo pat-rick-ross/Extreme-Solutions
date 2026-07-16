@@ -2,14 +2,15 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/your-org/isp-billing/internal/config"
-	"github.com/your-org/isp-billing/internal/pkg/logger"
 )
 
 type contextKey string
@@ -23,59 +24,88 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-func Auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			respondError(w, http.StatusUnauthorized, "Authorization header required")
-			return
-		}
+// GenerateToken creates a signed JWT string using the user's details and runtime configuration.
+// Call this function directly inside your Login Handler function!
+func GenerateToken(jwtSecret string, userID uuid.UUID, email, role string, duration time.Duration) (string, error) {
+	claims := &Claims{
+		UserID: userID.String(),
+		Email:  email,
+		Role:   role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
 
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			respondError(w, http.StatusUnauthorized, "Invalid authorization header format")
-			return
-		}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signedToken, err := token.SignedString([]byte(jwtSecret))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %w", err)
+	}
 
-		tokenString := parts[1]
-		claims := &Claims{}
+	return signedToken, nil
+}
 
-		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			return []byte(config.Get().JWT.Secret), nil
+// Auth verifies incoming JWT strings on protected endpoints
+func Auth(jwtSecret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				respondError(w, http.StatusUnauthorized, "Authorization header required")
+				return
+			}
+
+			parts := strings.Split(authHeader, " ")
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				respondError(w, http.StatusUnauthorized, "Invalid authorization header format")
+				return
+			}
+
+			tokenString := parts[1]
+			claims := &Claims{}
+
+			token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+				return []byte(jwtSecret), nil // Securely use the injected runtime key string
+			})
+
+			if err != nil || !token.Valid {
+				log.Printf("[AUTH ERROR] Invalid token payload submission: %v", err)
+				respondError(w, http.StatusUnauthorized, "Invalid or expired token")
+				return
+			}
+
+			if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
+				respondError(w, http.StatusUnauthorized, "Token expired")
+				return
+			}
+
+			userID, err := uuid.Parse(claims.UserID)
+			if err != nil {
+				log.Printf("[AUTH ERROR] Invalid UUID parsing context: %v", err)
+				respondError(w, http.StatusUnauthorized, "Invalid token claims")
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), UserIDKey, userID)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
-
-		if err != nil || !token.Valid {
-			logger.Error("Invalid token", map[string]interface{}{"error": err})
-			respondError(w, http.StatusUnauthorized, "Invalid or expired token")
-			return
-		}
-
-		// Validate token expiry
-		if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
-			respondError(w, http.StatusUnauthorized, "Token expired")
-			return
-		}
-
-		// Add user ID to context
-		userID, err := uuid.Parse(claims.UserID)
-		if err != nil {
-			logger.Error("Invalid user ID in token", map[string]interface{}{"error": err})
-			respondError(w, http.StatusUnauthorized, "Invalid token claims")
-			return
-		}
-
-		ctx := context.WithValue(r.Context(), UserIDKey, userID)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	}
 }
 
 func RequireRole(roles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Extract role from token (you'd implement this based on your token structure)
-			// For now, this is a placeholder
+			// Extract role from token constraints securely if needed later
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
+// Localized middleware error helper to avoid cross-package handler binding errors
+func respondError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}

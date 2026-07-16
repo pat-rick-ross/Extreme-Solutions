@@ -2,41 +2,37 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
+	"Extreme-Solutions/internal/domain"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/your-org/isp-billing/internal/domain"
 )
 
-type customerRepository struct {
-	db *pgxpool.Pool
+type CustomerRepository struct {
+	db *sql.DB
 }
 
-func NewCustomerRepository(db *pgxpool.Pool) *customerRepository {
-	return &customerRepository{db: db}
+// NewCustomerRepository initializes the postgres implementation
+func NewCustomerRepository(db *sql.DB) *CustomerRepository {
+	return &CustomerRepository{db: db}
 }
 
-func (r *customerRepository) Create(ctx context.Context, customer *domain.Customer) error {
+func (r *CustomerRepository) Create(ctx context.Context, customer *domain.Customer) error {
+	query := `
+		INSERT INTO customers (id, first_name, last_name, email, phone, address, package_id, balance, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`
 	if customer.ID == uuid.Nil {
 		customer.ID = uuid.New()
 	}
-
-	query := `
-		INSERT INTO customers (id, first_name, last_name, email, phone, address, package_id, balance, status, mikrotik_id, mikrotik_user, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`
-
 	now := time.Now()
 	customer.CreatedAt = now
 	customer.UpdatedAt = now
-	customer.Status = domain.StatusPending
-	customer.Balance = 0
 
-	_, err := r.db.Exec(ctx, query,
+	_, err := r.db.ExecContext(ctx, query,
 		customer.ID,
 		customer.FirstName,
 		customer.LastName,
@@ -46,344 +42,210 @@ func (r *customerRepository) Create(ctx context.Context, customer *domain.Custom
 		customer.PackageID,
 		customer.Balance,
 		customer.Status,
-		customer.MikroTikID,
-		customer.MikroTikUser,
 		customer.CreatedAt,
 		customer.UpdatedAt,
 	)
-
-	return err
-}
-
-func (r *customerRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Customer, error) {
-	query := `
-		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, mikrotik_id, mikrotik_user, created_at, updated_at, suspended_at, last_login_at
-		FROM customers
-		WHERE id = $1
-	`
-
-	var customer domain.Customer
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&customer.ID,
-		&customer.FirstName,
-		&customer.LastName,
-		&customer.Email,
-		&customer.Phone,
-		&customer.Address,
-		&customer.PackageID,
-		&customer.Balance,
-		&customer.Status,
-		&customer.MikroTikID,
-		&customer.MikroTikUser,
-		&customer.CreatedAt,
-		&customer.UpdatedAt,
-		&customer.SuspendedAt,
-		&customer.LastLoginAt,
-	)
-
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get customer: %w", err)
+		return fmt.Errorf("failed to insert customer: %w", err)
 	}
-
-	return &customer, nil
+	return nil
 }
 
-func (r *customerRepository) GetByEmail(ctx context.Context, email string) (*domain.Customer, error) {
+func (r *CustomerRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Customer, error) {
 	query := `
-		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, mikrotik_id, mikrotik_user, created_at, updated_at, suspended_at, last_login_at
-		FROM customers
-		WHERE email = $1
+		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, created_at, updated_at, suspended_at, last_login_at
+		FROM customers WHERE id = $1
 	`
-
-	var customer domain.Customer
-	err := r.db.QueryRow(ctx, query, email).Scan(
-		&customer.ID,
-		&customer.FirstName,
-		&customer.LastName,
-		&customer.Email,
-		&customer.Phone,
-		&customer.Address,
-		&customer.PackageID,
-		&customer.Balance,
-		&customer.Status,
-		&customer.MikroTikID,
-		&customer.MikroTikUser,
-		&customer.CreatedAt,
-		&customer.UpdatedAt,
-		&customer.SuspendedAt,
-		&customer.LastLoginAt,
+	var c domain.Customer
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&c.ID, &c.FirstName, &c.LastName, &c.Email, &c.Phone, &c.Address,
+		&c.PackageID, &c.Balance, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+		&c.SuspendedAt, &c.LastLoginAt,
 	)
-
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get customer by email: %w", err)
+	if err == sql.ErrNoRows {
+		return nil, nil // Return nil, nil when no records match cleanly
 	}
-
-	return &customer, nil
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch customer by id: %w", err)
+	}
+	return &c, nil
 }
 
-func (r *customerRepository) GetByPhone(ctx context.Context, phone string) (*domain.Customer, error) {
+func (r *CustomerRepository) GetByPhone(ctx context.Context, phone string) (*domain.Customer, error) {
 	query := `
-		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, mikrotik_id, mikrotik_user, created_at, updated_at, suspended_at, last_login_at
-		FROM customers
-		WHERE phone = $1
+		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, created_at, updated_at, suspended_at, last_login_at
+		FROM customers WHERE phone = $1
 	`
-
-	var customer domain.Customer
-	err := r.db.QueryRow(ctx, query, phone).Scan(
-		&customer.ID,
-		&customer.FirstName,
-		&customer.LastName,
-		&customer.Email,
-		&customer.Phone,
-		&customer.Address,
-		&customer.PackageID,
-		&customer.Balance,
-		&customer.Status,
-		&customer.MikroTikID,
-		&customer.MikroTikUser,
-		&customer.CreatedAt,
-		&customer.UpdatedAt,
-		&customer.SuspendedAt,
-		&customer.LastLoginAt,
+	var c domain.Customer
+	err := r.db.QueryRowContext(ctx, query, phone).Scan(
+		&c.ID, &c.FirstName, &c.LastName, &c.Email, &c.Phone, &c.Address,
+		&c.PackageID, &c.Balance, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+		&c.SuspendedAt, &c.LastLoginAt,
 	)
-
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get customer by phone: %w", err)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-
-	return &customer, nil
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch customer by phone: %w", err)
+	}
+	return &c, nil
 }
 
-func (r *customerRepository) Update(ctx context.Context, customer *domain.Customer) error {
+func (r *CustomerRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string) error {
+	var err error
+	if status == "suspended" {
+		query := `UPDATE customers SET status = $1, suspended_at = $2, updated_at = $3 WHERE id = $4`
+		_, err = r.db.ExecContext(ctx, query, status, time.Now(), time.Now(), id)
+	} else {
+		query := `UPDATE customers SET status = $1, suspended_at = NULL, updated_at = $2 WHERE id = $3`
+		_, err = r.db.ExecContext(ctx, query, status, time.Now(), id)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to update customer status: %w", err)
+	}
+	return nil
+}
+
+func (r *CustomerRepository) UpdateBalance(ctx context.Context, id uuid.UUID, amount float64) error {
+	query := `UPDATE customers SET balance = balance + $1, updated_at = $2 WHERE id = $3`
+	_, err := r.db.ExecContext(ctx, query, amount, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update customer ledger balance: %w", err)
+	}
+	return nil
+}
+
+func (r *CustomerRepository) Update(ctx context.Context, c *domain.Customer) error {
 	query := `
-		UPDATE customers
-		SET first_name = $1, last_name = $2, email = $3, phone = $4, address = $5, package_id = $6, balance = $7, status = $8, updated_at = $9
-		WHERE id = $10
+		UPDATE customers 
+		SET first_name = $1, last_name = $2, email = $3, phone = $4, address = $5, 
+		    package_id = $6, balance = $7, status = $8, updated_at = $9, 
+		    suspended_at = $10, last_login_at = $11, mikrotik_user = $12, mikrotik_id = $13
+		WHERE id = $14
 	`
-
-	customer.UpdatedAt = time.Now()
-
-	_, err := r.db.Exec(ctx, query,
-		customer.FirstName,
-		customer.LastName,
-		customer.Email,
-		customer.Phone,
-		customer.Address,
-		customer.PackageID,
-		customer.Balance,
-		customer.Status,
-		customer.UpdatedAt,
-		customer.ID,
+	_, err := r.db.ExecContext(ctx, query,
+		c.FirstName,
+		c.LastName,
+		c.Email,
+		c.Phone,
+		c.Address,
+		c.PackageID,
+		c.Balance,
+		c.Status,
+		time.Now(),
+		c.SuspendedAt,
+		c.LastLoginAt,
+		c.MikrotikUser,
+		c.MikrotikID,
+		c.ID,
 	)
-
-	return err
-}
-
-func (r *customerRepository) UpdateBalance(ctx context.Context, id uuid.UUID, amount float64) error {
-	query := `
-		UPDATE customers
-		SET balance = balance + $1, updated_at = $2
-		WHERE id = $3
-	`
-
-	_, err := r.db.Exec(ctx, query, amount, time.Now(), id)
-	return err
-}
-
-func (r *customerRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.CustomerStatus) error {
-	query := `
-		UPDATE customers
-		SET status = $1, suspended_at = $2, updated_at = $3
-		WHERE id = $4
-	`
-
-	var suspendedAt *time.Time
-	if status == domain.StatusSuspended {
-		now := time.Now()
-		suspendedAt = &now
-	}
-
-	_, err := r.db.Exec(ctx, query, status, suspendedAt, time.Now(), id)
-	return err
-}
-
-func (r *customerRepository) List(ctx context.Context, filter map[string]interface{}, page, pageSize int) ([]*domain.Customer, int64, error) {
-	var conditions []string
-	var args []interface{}
-	argCount := 1
-
-	if status, ok := filter["status"]; ok {
-		conditions = append(conditions, fmt.Sprintf("status = $%d", argCount))
-		args = append(args, status)
-		argCount++
-	}
-
-	if packageID, ok := filter["package_id"]; ok {
-		conditions = append(conditions, fmt.Sprintf("package_id = $%d", argCount))
-		args = append(args, packageID)
-		argCount++
-	}
-
-	if search, ok := filter["search"]; ok {
-		conditions = append(conditions, fmt.Sprintf("(first_name ILIKE $%d OR last_name ILIKE $%d OR email ILIKE $%d OR phone ILIKE $%d)", argCount, argCount, argCount, argCount))
-		searchTerm := "%" + search.(string) + "%"
-		args = append(args, searchTerm, searchTerm, searchTerm, searchTerm)
-		argCount += 4
-	}
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM customers %s", whereClause)
-	var total int64
-	err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count customers: %w", err)
+		return fmt.Errorf("failed to update customer record parameters: %w", err)
 	}
+	return nil
+}
 
-	offset := (page - 1) * pageSize
-	query := fmt.Sprintf(`
-		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, mikrotik_id, mikrotik_user, created_at, updated_at, suspended_at, last_login_at
+func (r *CustomerRepository) GetByEmail(ctx context.Context, email string) (*domain.Customer, error) {
+	query := `
+		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, created_at, updated_at, suspended_at, last_login_at
+		FROM customers WHERE email = $1
+	`
+	var c domain.Customer
+	err := r.db.QueryRowContext(ctx, query, email).Scan(
+		&c.ID, &c.FirstName, &c.LastName, &c.Email, &c.Phone, &c.Address,
+		&c.PackageID, &c.Balance, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+		&c.SuspendedAt, &c.LastLoginAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch customer by email: %w", err)
+	}
+	return &c, nil
+}
+
+// Add this method to internal/repository/postgres/customer_repo.go
+
+func (r *CustomerRepository) List(ctx context.Context, filters map[string]interface{}, limit, offset int) ([]*domain.Customer, int64, error) {
+	// Base query string construction block
+	query := `
+		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, created_at, updated_at, suspended_at, last_login_at, COUNT(*) OVER()
 		FROM customers
-		%s
 		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argCount, argCount+1)
-
-	args = append(args, pageSize, offset)
-
-	rows, err := r.db.Query(ctx, query, args...)
+		LIMIT $1 OFFSET $2
+	`
+	rows, err := r.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list customers: %w", err)
+		return nil, 0, fmt.Errorf("failed to execute query customer list: %w", err)
 	}
 	defer rows.Close()
 
 	var customers []*domain.Customer
+	var totalCount int64 = 0
+
 	for rows.Next() {
-		var customer domain.Customer
+		var c domain.Customer
 		err := rows.Scan(
-			&customer.ID,
-			&customer.FirstName,
-			&customer.LastName,
-			&customer.Email,
-			&customer.Phone,
-			&customer.Address,
-			&customer.PackageID,
-			&customer.Balance,
-			&customer.Status,
-			&customer.MikroTikID,
-			&customer.MikroTikUser,
-			&customer.CreatedAt,
-			&customer.UpdatedAt,
-			&customer.SuspendedAt,
-			&customer.LastLoginAt,
+			&c.ID, &c.FirstName, &c.LastName, &c.Email, &c.Phone, &c.Address,
+			&c.PackageID, &c.Balance, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&c.SuspendedAt, &c.LastLoginAt, &totalCount,
 		)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan customer: %w", err)
+			return nil, 0, fmt.Errorf("failed to scan customer dataset row: %w", err)
 		}
-		customers = append(customers, &customer)
+		customers = append(customers, &c)
 	}
 
-	return customers, total, nil
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return customers, totalCount, nil
 }
 
-func (r *customerRepository) ListActive(ctx context.Context) ([]*domain.Customer, error) {
-	query := `
-		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, mikrotik_id, mikrotik_user, created_at, updated_at, suspended_at, last_login_at
-		FROM customers
-		WHERE status = $1
-	`
+// Add this method to internal/repository/postgres/customer_repo.go
 
-	rows, err := r.db.Query(ctx, query, domain.StatusActive)
+func (r *CustomerRepository) ListActive(ctx context.Context) ([]*domain.Customer, error) {
+	query := `
+		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, created_at, updated_at, suspended_at, last_login_at
+		FROM customers
+		WHERE status = 'active'
+		ORDER BY created_at DESC
+	`
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list active customers: %w", err)
+		return nil, fmt.Errorf("failed to query active customer list: %w", err)
 	}
 	defer rows.Close()
 
 	var customers []*domain.Customer
 	for rows.Next() {
-		var customer domain.Customer
+		var c domain.Customer
 		err := rows.Scan(
-			&customer.ID,
-			&customer.FirstName,
-			&customer.LastName,
-			&customer.Email,
-			&customer.Phone,
-			&customer.Address,
-			&customer.PackageID,
-			&customer.Balance,
-			&customer.Status,
-			&customer.MikroTikID,
-			&customer.MikroTikUser,
-			&customer.CreatedAt,
-			&customer.UpdatedAt,
-			&customer.SuspendedAt,
-			&customer.LastLoginAt,
+			&c.ID, &c.FirstName, &c.LastName, &c.Email, &c.Phone, &c.Address,
+			&c.PackageID, &c.Balance, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&c.SuspendedAt, &c.LastLoginAt,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan customer: %w", err)
+			return nil, fmt.Errorf("failed to scan active customer row: %w", err)
 		}
-		customers = append(customers, &customer)
+		customers = append(customers, &c)
 	}
 
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	return customers, nil
 }
 
-func (r *customerRepository) ListSuspended(ctx context.Context) ([]*domain.Customer, error) {
-	query := `
-		SELECT id, first_name, last_name, email, phone, address, package_id, balance, status, mikrotik_id, mikrotik_user, created_at, updated_at, suspended_at, last_login_at
-		FROM customers
-		WHERE status = $1
-	`
+// Add this method at the bottom of your customer_repo.go file
 
-	rows, err := r.db.Query(ctx, query, domain.StatusSuspended)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list suspended customers: %w", err)
-	}
-	defer rows.Close()
-
-	var customers []*domain.Customer
-	for rows.Next() {
-		var customer domain.Customer
-		err := rows.Scan(
-			&customer.ID,
-			&customer.FirstName,
-			&customer.LastName,
-			&customer.Email,
-			&customer.Phone,
-			&customer.Address,
-			&customer.PackageID,
-			&customer.Balance,
-			&customer.Status,
-			&customer.MikroTikID,
-			&customer.MikroTikUser,
-			&customer.CreatedAt,
-			&customer.UpdatedAt,
-			&customer.SuspendedAt,
-			&customer.LastLoginAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan customer: %w", err)
-		}
-		customers = append(customers, &customer)
-	}
-
-	return customers, nil
-}
-
-func (r *customerRepository) Delete(ctx context.Context, id uuid.UUID) error {
+// Delete safely purges a customer profile block from the database ledger.
+func (r *CustomerRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	query := `DELETE FROM customers WHERE id = $1`
-	_, err := r.db.Exec(ctx, query, id)
-	return err
+	_, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to purge customer record: %w", err)
+	}
+	return nil
 }

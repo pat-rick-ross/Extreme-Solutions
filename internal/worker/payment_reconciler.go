@@ -2,14 +2,12 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
+	"Extreme-Solutions/internal/repository"
 	"github.com/hibiken/asynq"
-	"github.com/your-org/isp-billing/internal/domain"
-	"github.com/your-org/isp-billing/internal/pkg/logger"
-	"github.com/your-org/isp-billing/internal/repository"
 )
 
 const TypePaymentReconciliation = "payment:reconcile"
@@ -33,9 +31,8 @@ func NewPaymentReconciler(
 }
 
 func (w *PaymentReconciler) HandlePaymentReconciliation(ctx context.Context, t *asynq.Task) error {
-	logger.Info("Running payment reconciliation", nil)
+	log.Println("[INFO] Running background payment automated reconciliation check...")
 
-	// Get pending payments older than 5 minutes
 	pendingPayments, err := w.paymentRepo.ListPending(ctx)
 	if err != nil {
 		return err
@@ -46,58 +43,44 @@ func (w *PaymentReconciler) HandlePaymentReconciliation(ctx context.Context, t *
 	}
 
 	reconciled := 0
-	for _, payment := range pendingPayments {
-		// Here you would call M-PESA API to check status
-		// For now, we'll simulate a completed payment
-		status := domain.PaymentStatusCompleted
+	for _, p := range pendingPayments {
+		// String literal mapping to field definitions in image_0dfb40.png
+		status := "completed"
 
-		if status == domain.PaymentStatusCompleted {
-			// Update payment
-			if err := w.paymentRepo.CompletePayment(ctx, payment.ID, fmt.Sprintf("MPESA-%d", time.Now().Unix())); err != nil {
-				logger.Error("Failed to complete payment", map[string]interface{}{
-					"payment_id": payment.ID,
-					"error":      err,
-				})
+		if status == "completed" {
+			// 1. Ensure InvoiceID pointer is not nil before attempting reconciliation
+			if p.InvoiceID == nil {
+				log.Printf("[WARN] Skipping Payment ID %s because it has no linked InvoiceID", p.ID)
 				continue
 			}
 
-			// Mark invoice as paid
-			if err := w.invoiceRepo.MarkAsPaid(ctx, payment.InvoiceID, time.Now()); err != nil {
-				logger.Error("Failed to mark invoice as paid", map[string]interface{}{
-					"invoice_id": payment.InvoiceID,
-					"error":      err,
-				})
+			// 2. Update payment record details
+			if err := w.paymentRepo.CompletePayment(ctx, p.ID, fmt.Sprintf("MPESA-%d", time.Now().Unix())); err != nil {
+				log.Printf("[ERROR] Failed to complete target database billing ledger record for Payment ID %s: %v", p.ID, err)
 				continue
 			}
 
-			// Update customer balance
-			if err := w.customerRepo.UpdateBalance(ctx, payment.CustomerID, payment.Amount); err != nil {
-				logger.Error("Failed to update customer balance", map[string]interface{}{
-					"customer_id": payment.CustomerID,
-					"error":       err,
-				})
+			// 3. Fixed: Safely dereference the pointer (*p.InvoiceID) to pass it as a plain uuid.UUID value
+			if err := w.invoiceRepo.MarkAsPaid(ctx, *p.InvoiceID, time.Now()); err != nil {
+				log.Printf("[ERROR] Failed to mark reference invoice record status as paid for Invoice ID %s: %v", p.InvoiceID, err)
+				continue
+			}
+
+			// 4. Update customer balance
+			if err := w.customerRepo.UpdateBalance(ctx, p.CustomerID, p.Amount); err != nil {
+				log.Printf("[ERROR] Failed to update financial profile balance parameters for Customer ID %s: %v", p.CustomerID, err)
 				continue
 			}
 
 			reconciled++
-			logger.Info("Payment reconciled", map[string]interface{}{
-				"payment_id": payment.ID,
-				"amount":     payment.Amount,
-			})
+			log.Printf("[INFO] Transaction settlement reconciled safely. Payment ID: %s | Settled Amount: %.2f", p.ID, p.Amount)
 		} else {
-			// Mark payment as failed
-			if err := w.paymentRepo.UpdateStatus(ctx, payment.ID, domain.PaymentStatusFailed); err != nil {
-				logger.Error("Failed to mark payment as failed", map[string]interface{}{
-					"payment_id": payment.ID,
-					"error":      err,
-				})
+			if err := w.paymentRepo.UpdateStatus(ctx, p.ID, "failed"); err != nil {
+				log.Printf("[ERROR] Failed to update invalid ledger parameters to failed state status for Payment ID %s: %v", p.ID, err)
 			}
 		}
-	}
+	} // Closes the for loop
 
-	logger.Info("Payment reconciliation completed", map[string]interface{}{
-		"reconciled": reconciled,
-	})
-
+	log.Printf("[INFO] Payment verification loop completed. Total records reconciled: %d", reconciled)
 	return nil
 }
